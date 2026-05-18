@@ -114,6 +114,12 @@ def implied_market_probability(
     return out
 
 
+# Heuristic chase-window offsets from market start (innings 1 scheduled start).
+# T20 reality: innings 1 ~95 min, break ~20 min, innings 2 ~90 min.
+CHASE_OFFSET_START_MIN = 115
+CHASE_OFFSET_END_MIN = 215
+
+
 def match_betfair_to_cricsheet(
     betfair_index: list[dict],
     cricsheet_matches: pd.DataFrame,
