@@ -15,6 +15,7 @@ DismissalKind = Literal[
     "hit wicket",
     "retired hurt",
     "retired out",
+    "retired not out",
     "obstructing the field",
     "handled the ball",
     "hit the ball twice",

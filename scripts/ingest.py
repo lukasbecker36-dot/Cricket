@@ -22,12 +22,23 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/default.yaml")
     parser.add_argument("--force-download", action="store_true")
+    parser.add_argument(
+        "--league",
+        default="ipl",
+        help="Cricsheet league code: ipl, bbl, psl, cpl, ntb (T20 Blast), lpl, sa20, ilt20, mlc",
+    )
     args = parser.parse_args()
 
     configure_logging()
     cfg = Config.load(args.config)
 
-    zip_path = cfg.data.cache_dir / "ipl_json.zip"
+    # Override paths for non-IPL leagues so each league has its own parquet store.
+    if args.league != "ipl":
+        cfg.data.cricsheet_url = f"https://cricsheet.org/downloads/{args.league}_json.zip"
+        cfg.data.processed_dir = Path(f"data/processed/{args.league}")
+        cfg.data.cache_dir = Path(f"data/cache/{args.league}")
+
+    zip_path = cfg.data.cache_dir / f"{args.league}_json.zip"
     download_zip(cfg.data.cricsheet_url, zip_path, force=args.force_download)
 
     metas: list = []
