@@ -31,6 +31,10 @@ class ValidationConfig(BaseModel):
     train_seasons: list[int] = Field(default_factory=lambda: list(range(2008, 2021)))
     test_seasons: list[int] = Field(default_factory=lambda: [2021, 2022, 2023, 2024])
     min_balls_into_chase: int = 6
+    # Drop the first N seasons from training: stats for those rows are computed from
+    # too few prior seasons (or none), creating training-feature distribution heterogeneity
+    # vs test rows that always see ~14 prior seasons. Costs us a few hundred matches.
+    warmup_seasons_to_skip: int = 3
 
 
 class BacktestConfig(BaseModel):

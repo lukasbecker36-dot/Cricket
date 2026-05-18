@@ -41,9 +41,23 @@ def build_dataset(
     up_to_season_for_stats: int,
     min_balls_into_chase: int,
 ) -> pd.DataFrame:
-    """Generate (features, label) rows for every legal point in every chase."""
-    stats = compute_player_stats(balls, up_to_season=up_to_season_for_stats)
-    venue_pars = compute_venue_pars(balls, up_to_season=up_to_season_for_stats)
+    """Generate (features, label) rows for every legal point in every chase.
+
+    Stats are computed per-row-season using only strictly-prior seasons. This is
+    critical: using stats that include the row's own season is leakage (CLAUDE.md).
+    The `up_to_season_for_stats` cap is an upper bound — used to keep test-season
+    rows from seeing future data when this function is asked to build mixed pools.
+    """
+    seasons_in_data = sorted(balls["season"].unique())
+    # Cache: season -> (PlayerStats, venue_pars) computed from all seasons < that season.
+    stats_cache: dict[int, tuple] = {}
+    for s in seasons_in_data:
+        cap = min(s, up_to_season_for_stats)
+        if cap not in stats_cache:
+            stats_cache[cap] = (
+                compute_player_stats(balls, up_to_season=cap),
+                compute_venue_pars(balls, up_to_season=cap),
+            )
 
     match_labels = matches.set_index("match_id")
     rows: list[dict] = []
@@ -57,6 +71,10 @@ def build_dataset(
         if chasing_team.empty or pd.isna(winner):
             continue
         label = int(winner == chasing_team.iloc[0])
+
+        row_season = int(group["season"].iloc[0])
+        cap = min(row_season, up_to_season_for_stats)
+        stats, venue_pars = stats_cache[cap]
 
         for i, state in enumerate(replay_chase(group, label=label)):
             if i < min_balls_into_chase:
@@ -79,9 +97,15 @@ def walk_forward(
     test_seasons: list[int],
     cfg: ModelConfig,
     min_balls_into_chase: int = 6,
+    warmup_seasons_to_skip: int = 0,
 ) -> Iterator[FoldResult]:
-    """Yield one FoldResult per test season. Stats computed using only prior data."""
-    train_pool = sorted(set(train_seasons))
+    """Yield one FoldResult per test season. Stats computed using only prior data.
+
+    `warmup_seasons_to_skip` drops the first N seasons from the training pool — those
+    rows have sparse stats (computed from very few prior seasons) and create within-train
+    feature distribution heterogeneity vs test rows that see all prior history.
+    """
+    train_pool = sorted(set(train_seasons))[warmup_seasons_to_skip:]
     for test_season in sorted(test_seasons):
         train_mask = balls["season"].isin(train_pool)
         train_balls = balls[train_mask]

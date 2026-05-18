@@ -47,6 +47,7 @@ def main() -> int:
         test_seasons=cfg.validation.test_seasons,
         cfg=cfg.model,
         min_balls_into_chase=cfg.validation.min_balls_into_chase,
+        warmup_seasons_to_skip=cfg.validation.warmup_seasons_to_skip,
     ):
         m = fold.metrics
         logger.info(
