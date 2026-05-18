@@ -111,7 +111,15 @@ def walk_forward(
         train_part = train_df.iloc[:cut]
         valid_part = train_df.iloc[cut:]
 
-        model = train_lightgbm(train_part, valid_part, cfg)
+        # recency weighting: weight = decay^(test_season - 1 - season)
+        # so the most recent training season has weight 1.0 and older seasons decay.
+        ref_season = test_season - 1
+        weights = np.power(
+            cfg.recency_decay,
+            np.maximum(ref_season - train_part["season"].to_numpy(), 0),
+        ).astype(np.float32)
+
+        model = train_lightgbm(train_part, valid_part, cfg, train_weights=weights)
         raw_valid = model.booster.predict(valid_part[FEATURE_COLUMNS].to_numpy(dtype=np.float32))
         calibrator = fit_isotonic(np.asarray(raw_valid), valid_part["label"].to_numpy())
 

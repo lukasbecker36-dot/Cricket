@@ -11,6 +11,9 @@ model:
   min_data_in_leaf: 200
   n_estimators: 1000
   early_stopping_rounds: 50
+  # Recency weighting tested at 0.92 and net-hurt 2023 (regime boundary) and 2024.
+  # Kept at 1.0 (uniform). See diagnose_season output and commit history for evidence.
+  recency_decay: 1.0
 
 validation:
   train_seasons: [2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]

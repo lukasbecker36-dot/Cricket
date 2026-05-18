@@ -34,6 +34,7 @@ def train_lightgbm(
     train_df: pd.DataFrame,
     valid_df: pd.DataFrame,
     cfg: ModelConfig,
+    train_weights: np.ndarray | None = None,
 ) -> TrainedModel:
     """Train a binary GBM on chase win probability."""
     if "label" not in train_df.columns:
@@ -44,7 +45,9 @@ def train_lightgbm(
     x_valid = valid_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32)
     y_valid = valid_df["label"].to_numpy(dtype=np.int8)
 
-    dtrain = lgb.Dataset(x_train, label=y_train, feature_name=FEATURE_COLUMNS)
+    dtrain = lgb.Dataset(
+        x_train, label=y_train, weight=train_weights, feature_name=FEATURE_COLUMNS
+    )
     dvalid = lgb.Dataset(x_valid, label=y_valid, feature_name=FEATURE_COLUMNS, reference=dtrain)
 
     params = {

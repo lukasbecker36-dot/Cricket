@@ -21,6 +21,10 @@ class ModelConfig(BaseModel):
     min_data_in_leaf: int = 200
     n_estimators: int = 1000
     early_stopping_rounds: int = 50
+    # Recency weighting: each older season's sample weight decays by this factor per year.
+    # 1.0 = uniform; 0.92 = the most recent training season carries ~2.4x the weight of one
+    # 10 years older. Justified by IPL regime drift (rules, par scores).
+    recency_decay: float = 0.92
 
 
 class ValidationConfig(BaseModel):
