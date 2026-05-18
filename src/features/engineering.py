@@ -5,7 +5,12 @@ from collections.abc import Iterator
 
 import pandas as pd
 
-from .player_quality import PlayerStats, shrunk_economy, shrunk_strike_rate
+from .player_quality import (
+    LEAGUE_ECON_MEAN,
+    PlayerStats,
+    shrunk_economy,
+    shrunk_strike_rate,
+)
 from .rolling_form import recent_sr
 from .state import ChaseState
 
@@ -31,6 +36,10 @@ FEATURE_COLUMNS: list[str] = [
     # rolling-form features (last 10 prior matches per batter)
     "striker_recent_sr",
     "non_striker_recent_sr",
+    # remaining-bowling-resource features
+    "remaining_econ",
+    "best_bowler_overs_left",
+    "n_bowlers_with_overs_left",
 ]
 
 
@@ -39,6 +48,47 @@ def venue_par_score(venue_pars: pd.Series, venue: str, league_mean: float = 165.
     if val is None or pd.isna(val):
         return league_mean
     return float(val)
+
+
+def remaining_bowling_quality(
+    bowlers_used: dict[str, int],
+    legal_balls_bowled: int,
+    stats: PlayerStats,
+) -> tuple[float, float, int]:
+    """Estimate quality of bowling overs still to be bowled.
+
+    Returns (expected_econ, best_bowler_overs_left, n_bowlers_with_overs_left).
+
+    Logic: each bowler can bowl max 24 legal balls (4 overs). For each bowler who
+    has bowled, remaining = 24 - balls_bowled. Total innings has 120 legal balls;
+    "unknown" remaining overs (= total - sum of known remaining) get filled at
+    the league-mean economy. Final econ = ball-weighted average across known and
+    unknown remaining balls.
+    """
+    total_remaining = max(0, 120 - legal_balls_bowled)
+    if total_remaining == 0:
+        return LEAGUE_ECON_MEAN, 0.0, 0
+
+    known_remaining_balls = 0
+    known_runs_per_ball_weighted = 0.0  # sum of (balls_left * econ/6)
+    best_left = 0
+    n_with_left = 0
+    for bowler, used in bowlers_used.items():
+        left = max(0, 24 - used)
+        if left == 0:
+            continue
+        n_with_left += 1
+        if left > best_left:
+            best_left = left
+        known_remaining_balls += left
+        econ = shrunk_economy(stats, bowler)
+        known_runs_per_ball_weighted += left * (econ / 6.0)
+
+    unknown_balls = max(0, total_remaining - known_remaining_balls)
+    unknown_runs = unknown_balls * (LEAGUE_ECON_MEAN / 6.0)
+    expected_runs = known_runs_per_ball_weighted + unknown_runs
+    expected_econ = expected_runs / total_remaining * 6.0
+    return expected_econ, best_left / 6.0, n_with_left
 
 
 def features_from_state(
@@ -52,6 +102,9 @@ def features_from_state(
     if rrr == float("inf"):
         rrr = 36.0  # cap: > any realistic value, model treats as "lost"
     rf = rolling_form or {}
+    rem_econ, best_left, n_left = remaining_bowling_quality(
+        state.bowlers_used, state.legal_balls_bowled, stats
+    )
     return {
         "required_run_rate": rrr,
         "current_run_rate": state.current_run_rate,
@@ -72,6 +125,9 @@ def features_from_state(
         "recent_run_rate": state.runs_last_12_balls / 12.0 * 6.0,
         "striker_recent_sr": recent_sr(rf, state.match_id, state.striker),
         "non_striker_recent_sr": recent_sr(rf, state.match_id, state.non_striker),
+        "remaining_econ": rem_econ,
+        "best_bowler_overs_left": best_left,
+        "n_bowlers_with_overs_left": float(n_left),
     }
 
 
@@ -103,6 +159,7 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
     wickets = 0
     legal = 0
     balls_faced: dict[str, int] = {}
+    bowlers_used: dict[str, int] = {}
 
     # history: one entry per delivery (legal or not). Each is (runs, wicket, is_legal, is_boundary)
     history: list[tuple[int, bool, bool, bool]] = []
@@ -164,6 +221,7 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
             runs_last_12_balls=runs_12,
             wickets_last_18_balls=wkts_18,
             boundaries_last_over=boundaries,
+            bowlers_used=dict(bowlers_used),
             label=label,
         )
 
@@ -178,5 +236,6 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
         if is_legal:
             legal += 1
             balls_faced[striker] = balls_faced.get(striker, 0) + 1
+            bowlers_used[bowler] = bowlers_used.get(bowler, 0) + 1
         if is_wicket:
             wickets += 1

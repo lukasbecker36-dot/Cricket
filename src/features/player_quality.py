@@ -22,6 +22,8 @@ class PlayerStats:
 
 SHRINK_PRIOR_BALLS = 60  # ~10 overs faced; conservative
 SHRINK_PRIOR_BOWLER_BALLS = 60
+LEAGUE_SR_MEAN = 130.0
+LEAGUE_ECON_MEAN = 8.2
 
 
 def compute_player_stats(balls: pd.DataFrame, up_to_season: int) -> PlayerStats:

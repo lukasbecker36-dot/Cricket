@@ -23,6 +23,8 @@ class ChaseState(BaseModel):
     runs_last_12_balls: int = 0
     wickets_last_18_balls: int = 0
     boundaries_last_over: int = 0
+    # bowler -> legal balls already bowled by them in this innings
+    bowlers_used: dict[str, int] = {}
     label: int | None = None  # 1 if chasing team won, 0 if not; None for live
 
     @property
