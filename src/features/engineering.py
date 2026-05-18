@@ -6,6 +6,7 @@ from collections.abc import Iterator
 import pandas as pd
 
 from .player_quality import PlayerStats, shrunk_economy, shrunk_strike_rate
+from .rolling_form import recent_sr
 from .state import ChaseState
 
 FEATURE_COLUMNS: list[str] = [
@@ -27,6 +28,9 @@ FEATURE_COLUMNS: list[str] = [
     "boundaries_last_over",
     "phase",
     "recent_run_rate",
+    # rolling-form features (last 10 prior matches per batter)
+    "striker_recent_sr",
+    "non_striker_recent_sr",
 ]
 
 
@@ -41,11 +45,13 @@ def features_from_state(
     state: ChaseState,
     stats: PlayerStats,
     venue_pars: pd.Series,
+    rolling_form: dict[tuple[str, str], tuple[float, float]] | None = None,
 ) -> dict[str, float]:
     """Build the v1 feature dict from a ChaseState. Fully testable."""
     rrr = state.required_run_rate
     if rrr == float("inf"):
         rrr = 36.0  # cap: > any realistic value, model treats as "lost"
+    rf = rolling_form or {}
     return {
         "required_run_rate": rrr,
         "current_run_rate": state.current_run_rate,
@@ -64,6 +70,8 @@ def features_from_state(
         "boundaries_last_over": float(state.boundaries_last_over),
         "phase": float(state.phase),
         "recent_run_rate": state.runs_last_12_balls / 12.0 * 6.0,
+        "striker_recent_sr": recent_sr(rf, state.match_id, state.striker),
+        "non_striker_recent_sr": recent_sr(rf, state.match_id, state.non_striker),
     }
 
 

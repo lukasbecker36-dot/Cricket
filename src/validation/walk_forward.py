@@ -19,6 +19,7 @@ from ..features.engineering import (
     replay_chase,
 )
 from ..features.player_quality import compute_player_stats
+from ..features.rolling_form import compute_rolling_batter_form
 from ..ingestion.schema import MatchMeta
 from ..model.calibration import fit_isotonic
 from ..model.train import TrainedModel, train_lightgbm
@@ -59,6 +60,10 @@ def build_dataset(
                 compute_venue_pars(balls, up_to_season=cap),
             )
 
+    # Rolling-form lookup is global and leakage-free by construction (uses strictly
+    # prior matches per batter via shift(1) on chronologically-sorted per-match aggregates).
+    rolling_form = compute_rolling_batter_form(balls, matches)
+
     match_labels = matches.set_index("match_id")
     rows: list[dict] = []
 
@@ -79,7 +84,7 @@ def build_dataset(
         for i, state in enumerate(replay_chase(group, label=label)):
             if i < min_balls_into_chase:
                 continue
-            feats = features_from_state(state, stats, venue_pars)
+            feats = features_from_state(state, stats, venue_pars, rolling_form)
             feats.update(
                 match_id=match_id, season=state.season, ball_index=i, label=state.label
             )
