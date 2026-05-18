@@ -21,6 +21,12 @@ FEATURE_COLUMNS: list[str] = [
     "bowler_econ",
     "venue_par",
     "target",
+    # recent-form features
+    "runs_last_12_balls",
+    "wickets_last_18_balls",
+    "boundaries_last_over",
+    "phase",
+    "recent_run_rate",
 ]
 
 
@@ -53,6 +59,11 @@ def features_from_state(
         "bowler_econ": shrunk_economy(stats, state.bowler),
         "venue_par": venue_par_score(venue_pars, state.venue),
         "target": float(state.target),
+        "runs_last_12_balls": float(state.runs_last_12_balls),
+        "wickets_last_18_balls": float(state.wickets_last_18_balls),
+        "boundaries_last_over": float(state.boundaries_last_over),
+        "phase": float(state.phase),
+        "recent_run_rate": state.runs_last_12_balls / 12.0 * 6.0,
     }
 
 
@@ -85,10 +96,49 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
     legal = 0
     balls_faced: dict[str, int] = {}
 
+    # history: one entry per delivery (legal or not). Each is (runs, wicket, is_legal, is_boundary)
+    history: list[tuple[int, bool, bool, bool]] = []
+
+    def window_stats(legal_window: int) -> tuple[int, int]:
+        """Sum runs and wickets over the last `legal_window` legal deliveries."""
+        if legal_window <= 0:
+            return 0, 0
+        legal_seen = 0
+        r = 0
+        w = 0
+        for entry in reversed(history):
+            er, ew, eleg, _ = entry
+            r += er
+            if ew:
+                w += 1
+            if eleg:
+                legal_seen += 1
+                if legal_seen >= legal_window:
+                    break
+        return r, w
+
+    def boundaries_in_last_over() -> int:
+        """Count 4s + 6s among the last 6 legal deliveries."""
+        legal_seen = 0
+        b = 0
+        for entry in reversed(history):
+            _, _, eleg, is_boundary = entry
+            if eleg:
+                legal_seen += 1
+                if is_boundary:
+                    b += 1
+                if legal_seen >= 6:
+                    break
+        return b
+
     for _, ball in inn2.iterrows():
         striker = str(ball["striker"])
         non_striker = str(ball["non_striker"])
         bowler = str(ball["bowler"])
+
+        runs_12, _ = window_stats(12)
+        _, wkts_18 = window_stats(18)
+        boundaries = boundaries_in_last_over()
 
         yield ChaseState(
             match_id=match_id,
@@ -103,12 +153,22 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
             striker_balls_faced=balls_faced.get(striker, 0),
             non_striker_balls_faced=balls_faced.get(non_striker, 0),
             bowler=bowler,
+            runs_last_12_balls=runs_12,
+            wickets_last_18_balls=wkts_18,
+            boundaries_last_over=boundaries,
             label=label,
         )
 
-        runs += int(ball["runs_total"])
-        if bool(ball["is_legal_delivery"]):
+        r = int(ball["runs_total"])
+        rb = int(ball["runs_batter"])
+        is_legal = bool(ball["is_legal_delivery"])
+        is_wicket = bool(ball["wicket"])
+        is_boundary = is_legal and rb in (4, 6)
+        history.append((r, is_wicket, is_legal, is_boundary))
+
+        runs += r
+        if is_legal:
             legal += 1
             balls_faced[striker] = balls_faced.get(striker, 0) + 1
-        if bool(ball["wicket"]):
+        if is_wicket:
             wickets += 1

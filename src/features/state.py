@@ -19,7 +19,21 @@ class ChaseState(BaseModel):
     striker_balls_faced: int
     non_striker_balls_faced: int
     bowler: str
+    # recent-form windows (computed by replay_chase)
+    runs_last_12_balls: int = 0
+    wickets_last_18_balls: int = 0
+    boundaries_last_over: int = 0
     label: int | None = None  # 1 if chasing team won, 0 if not; None for live
+
+    @property
+    def phase(self) -> int:
+        """0=powerplay (overs 0-5), 1=middle (6-14), 2=death (15-19)."""
+        over_idx = self.legal_balls_bowled // 6
+        if over_idx < 6:
+            return 0
+        if over_idx < 15:
+            return 1
+        return 2
 
     @property
     def runs_required(self) -> int:
