@@ -23,6 +23,7 @@ def test_phase_economy_returns_league_for_unknown_bowler():
     stats = PlayerStats(
         batting_strike_rate=pd.Series(dtype=float),
         batting_balls_faced=pd.Series(dtype=float),
+        batting_boundary_rate=pd.Series(dtype=float),
         bowler_economy=pd.Series(dtype=float),
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={},
@@ -41,6 +42,7 @@ def test_phase_economy_distinguishes_phases_for_same_bowler():
     stats = PlayerStats(
         batting_strike_rate=pd.Series(dtype=float),
         batting_balls_faced=pd.Series(dtype=float),
+        batting_boundary_rate=pd.Series(dtype=float),
         bowler_economy=pd.Series(dtype=float),
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={("BUMRAH", 0): pp_runs, ("BUMRAH", 2): death_runs},

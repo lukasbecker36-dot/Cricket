@@ -17,6 +17,7 @@ def stats_with(bowler_econs: dict[str, float], balls_each: int = 600) -> PlayerS
     return PlayerStats(
         batting_strike_rate=pd.Series(dtype=float),
         batting_balls_faced=pd.Series(dtype=float),
+        batting_boundary_rate=pd.Series(dtype=float),
         bowler_economy=pd.Series(bowler_econs),
         bowler_balls=pd.Series({b: balls_each for b in bowler_econs}),
         bowler_phase_runs=phase_runs,

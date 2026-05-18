@@ -9,6 +9,7 @@ def empty_stats():
     return PlayerStats(
         batting_strike_rate=pd.Series(dtype=float),
         batting_balls_faced=pd.Series(dtype=float),
+        batting_boundary_rate=pd.Series(dtype=float),
         bowler_economy=pd.Series(dtype=float),
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={},
@@ -40,6 +41,7 @@ def test_shrinkage_pulls_small_sample_toward_prior():
     stats = PlayerStats(
         batting_strike_rate=pd.Series({"A": 200.0}),
         batting_balls_faced=pd.Series({"A": 10}),
+        batting_boundary_rate=pd.Series(dtype=float),
         bowler_economy=pd.Series(dtype=float),
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={},

@@ -16,6 +16,7 @@ class PlayerStats:
 
     batting_strike_rate: pd.Series  # indexed by batter name
     batting_balls_faced: pd.Series
+    batting_boundary_rate: pd.Series  # boundaries (4s+6s) per legal ball
     bowler_economy: pd.Series  # career economy, runs per over
     bowler_balls: pd.Series
     # Phase-specific bowler stats: dicts keyed by (bowler, phase) where phase
@@ -30,6 +31,7 @@ SHRINK_PRIOR_BOWLER_BALLS = 60
 SHRINK_PRIOR_PHASE_BALLS = 30  # phase samples are sparser; smaller prior
 LEAGUE_SR_MEAN = 130.0
 LEAGUE_ECON_MEAN = 8.2
+LEAGUE_BOUNDARY_RATE = 0.135  # ~13.5% of legal balls go for 4 or 6 in T20
 
 
 def over_to_phase(over: int) -> int:
@@ -48,6 +50,7 @@ def compute_player_stats(balls: pd.DataFrame, up_to_season: int) -> PlayerStats:
         return PlayerStats(
             batting_strike_rate=empty_s,
             batting_balls_faced=empty_s,
+            batting_boundary_rate=empty_s,
             bowler_economy=empty_s,
             bowler_balls=empty_s,
             bowler_phase_runs={},
@@ -59,6 +62,10 @@ def compute_player_stats(balls: pd.DataFrame, up_to_season: int) -> PlayerStats:
     bat_runs = bat_legal.groupby("striker")["runs_batter"].sum()
     bat_balls = bat_legal.groupby("striker").size()
     bat_sr = (bat_runs / bat_balls * 100.0).fillna(0.0)
+    bat_boundaries = bat_legal.assign(is_b=bat_legal["runs_batter"].isin([4, 6])).groupby(
+        "striker"
+    )["is_b"].sum()
+    bat_boundary_rate = (bat_boundaries / bat_balls).fillna(0.0)
 
     bowl = past[past["is_legal_delivery"]].copy()
     bowl_runs = bowl.groupby("bowler")["runs_total"].sum()
@@ -78,6 +85,7 @@ def compute_player_stats(balls: pd.DataFrame, up_to_season: int) -> PlayerStats:
     return PlayerStats(
         batting_strike_rate=bat_sr,
         batting_balls_faced=bat_balls,
+        batting_boundary_rate=bat_boundary_rate,
         bowler_economy=bowl_econ,
         bowler_balls=bowl_balls,
         bowler_phase_runs=phase_runs,
@@ -102,6 +110,16 @@ def shrunk_strike_rate(stats: PlayerStats, player: str, league_mean: float = 130
     if sr is None or n == 0:
         return league_mean
     return (n * sr + SHRINK_PRIOR_BALLS * league_mean) / (n + SHRINK_PRIOR_BALLS)
+
+
+def shrunk_boundary_rate(
+    stats: PlayerStats, player: str, league_mean: float = LEAGUE_BOUNDARY_RATE
+) -> float:
+    rate = stats.batting_boundary_rate.get(player)
+    n = stats.batting_balls_faced.get(player, 0)
+    if rate is None or n == 0:
+        return league_mean
+    return (n * rate + SHRINK_PRIOR_BALLS * league_mean) / (n + SHRINK_PRIOR_BALLS)
 
 
 def shrunk_economy(stats: PlayerStats, player: str, league_mean: float = 8.2) -> float:
