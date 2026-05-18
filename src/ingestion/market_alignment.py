@@ -130,26 +130,151 @@ def chase_window_prices(
 
 
 def market_prob_at_ball(
-    chase_prices: pd.DataFrame, ball_index: int, total_balls: int = 120
+    chase_prices: pd.DataFrame,
+    ball_index: int,
+    anchors: list[tuple[int, int]] | None = None,
+    total_balls: int = 120,
 ) -> float | None:
     """Look up prevailing market_prob_chasing at the projected wall-time for ball_index.
 
-    Uses chase_prices' observed first/last timestamps as the chase wall-time span,
-    then linearly maps ball_index/total_balls into that span, applies the 5s
-    decision lag, and returns the most recent price at or before that time.
+    If `anchors` is provided, interpolates wall-time between (ball_index,
+    wall_time_ms) anchor pairs -- typically derived from matching wicket events
+    to detected price drops. Otherwise falls back to linear ball/total mapping
+    across the chase window observed in `chase_prices`.
+
+    Applies DECISION_LAG_MS (negative => use stale prices) before lookup.
     """
     if chase_prices.empty:
         return None
-    t0 = int(chase_prices["pt_ms"].iloc[0])
-    t1 = int(chase_prices["pt_ms"].iloc[-1])
-    if t1 <= t0:
-        return float(chase_prices["market_prob_chasing"].iloc[-1])
-    frac = min(max(ball_index / total_balls, 0.0), 1.0)
-    target = t0 + int(frac * (t1 - t0)) + DECISION_LAG_MS
+    if anchors is not None and len(anchors) >= 2:
+        target = interpolate_ball_to_wall(ball_index, anchors)
+    else:
+        t0 = int(chase_prices["pt_ms"].iloc[0])
+        t1 = int(chase_prices["pt_ms"].iloc[-1])
+        if t1 <= t0:
+            return float(chase_prices["market_prob_chasing"].iloc[-1])
+        frac = min(max(ball_index / total_balls, 0.0), 1.0)
+        target = t0 + int(frac * (t1 - t0))
+    target += DECISION_LAG_MS
     prior = chase_prices[chase_prices["pt_ms"] <= target]
     if prior.empty:
         return float(chase_prices["market_prob_chasing"].iloc[0])
     return float(prior["market_prob_chasing"].iloc[-1])
+
+
+# --- Wicket-event price-jump matching ------------------------------------
+
+# A price drop must be at least this large within `WICKET_WINDOW_MS` to count
+# as a likely wicket. Boundaries cause smaller drops; bowled/caught/lbw typically
+# move the chasing team's prob by 4-15 percentage points within a minute.
+WICKET_MIN_DROP = 0.04
+WICKET_WINDOW_MS = 60_000
+# A ball is considered to have happened during the "uncertain" period if the
+# market prob is strictly between these. Outside this range the outcome is
+# essentially settled and tick timestamps no longer track real ball events.
+UNCERTAIN_LO = 0.05
+UNCERTAIN_HI = 0.95
+
+
+def wicket_ball_indices(balls: pd.DataFrame, match_id: str) -> list[int]:
+    """Return ball_index values (replay_chase numbering) where wickets fell in inn 2."""
+    inn2 = balls[(balls["match_id"] == match_id) & (balls["innings"] == 2)].sort_values(
+        ["over", "ball", "is_legal_delivery"], ascending=[True, True, False]
+    ).reset_index(drop=True)
+    return [int(i) for i, row in enumerate(inn2.itertuples(index=False)) if bool(row.wicket)]
+
+
+def detect_price_drops(
+    chase_prices: pd.DataFrame,
+    min_drop: float = WICKET_MIN_DROP,
+    window_ms: int = WICKET_WINDOW_MS,
+) -> list[int]:
+    """Find timestamps of likely wicket-induced sudden drops in chasing-team prob.
+
+    For each tick, compare its prob to the max prob in the prior `window_ms`.
+    A drop of >= `min_drop` is a candidate. Candidates within `window_ms` of
+    each other are clustered (same event); we keep the biggest in each cluster.
+    """
+    if chase_prices.empty:
+        return []
+    s = chase_prices.sort_values("pt_ms").reset_index(drop=True)
+    times = s["pt_ms"].to_numpy()
+    probs = s["market_prob_chasing"].to_numpy()
+    candidates: list[tuple[float, int]] = []
+    j = 0
+    for i in range(1, len(s)):
+        while j < i and times[j] < times[i] - window_ms:
+            j += 1
+        if j == i:
+            continue
+        max_prev = probs[j:i].max()
+        drop = float(max_prev - probs[i])
+        if drop >= min_drop:
+            candidates.append((drop, int(times[i])))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[1])
+    clustered: list[tuple[float, int]] = [candidates[0]]
+    for drop, t in candidates[1:]:
+        if t - clustered[-1][1] < window_ms:
+            if drop > clustered[-1][0]:
+                clustered[-1] = (drop, t)
+        else:
+            clustered.append((drop, t))
+    return [t for _, t in clustered]
+
+
+def find_chase_uncertain_end(chase_prices: pd.DataFrame) -> int | None:
+    """Last tick whose prob is in the uncertain range; rough proxy for 'match still alive'."""
+    if chase_prices.empty:
+        return None
+    uncertain = chase_prices[
+        (chase_prices["market_prob_chasing"] > UNCERTAIN_LO)
+        & (chase_prices["market_prob_chasing"] < UNCERTAIN_HI)
+    ]
+    if uncertain.empty:
+        return int(chase_prices["pt_ms"].iloc[-1])
+    return int(uncertain["pt_ms"].iloc[-1])
+
+
+def build_anchors(
+    wicket_indices: list[int],
+    drop_times: list[int],
+    chase_start_ms: int,
+    chase_end_ms: int,
+    last_ball_index: int = 120,
+) -> list[tuple[int, int]] | None:
+    """Pair wickets to price drops by chronological order, return sorted
+    (ball_index, wall_time_ms) anchors. Returns None if the result isn't
+    strictly monotonic in both axes (which means we matched wrong).
+
+    Always brackets with the chase start (ball_index=0) and chase end
+    (ball_index=last_ball_index).
+    """
+    n = min(len(wicket_indices), len(drop_times))
+    pairs = list(zip(wicket_indices[:n], drop_times[:n]))
+    anchors = [(0, chase_start_ms)] + pairs + [(last_ball_index, chase_end_ms)]
+    for i in range(1, len(anchors)):
+        if anchors[i][0] <= anchors[i - 1][0]:
+            return None
+        if anchors[i][1] <= anchors[i - 1][1]:
+            return None
+    return anchors
+
+
+def interpolate_ball_to_wall(ball_index: int, anchors: list[tuple[int, int]]) -> int:
+    """Linearly interpolate ball_index -> wall_time_ms between adjacent anchors."""
+    for i in range(len(anchors) - 1):
+        b0, t0 = anchors[i]
+        b1, t1 = anchors[i + 1]
+        if b0 <= ball_index <= b1:
+            if b1 == b0:
+                return t0
+            frac = (ball_index - b0) / (b1 - b0)
+            return int(t0 + frac * (t1 - t0))
+    if ball_index <= anchors[0][0]:
+        return anchors[0][1]
+    return anchors[-1][1]
 
 
 def build_market_lookup(
@@ -166,7 +291,9 @@ def build_market_lookup(
     join_by_match = join_df.set_index("cricsheet_match_id")
     out_rows: list[float | None] = []
 
-    cache: dict[str, pd.DataFrame] = {}
+    # cache[match_id] = (chase_prices_df, anchors_list_or_None)
+    cache: dict[str, tuple[pd.DataFrame, list[tuple[int, int]] | None]] = {}
+    n_with_anchors = 0
     for row in predictions.itertuples(index=False):
         match_id = row.match_id
         if match_id not in join_by_match.index:
@@ -177,7 +304,7 @@ def build_market_lookup(
             ticks_path = betfair_dir / f"season={season}" / f"{match_id}_ticks.parquet"
             runners_path = betfair_dir / f"season={season}" / f"{match_id}_runners.json"
             if not ticks_path.exists() or not runners_path.exists():
-                cache[match_id] = pd.DataFrame(columns=["pt_ms", "market_prob_chasing"])
+                cache[match_id] = (pd.DataFrame(columns=["pt_ms", "market_prob_chasing"]), None)
             else:
                 ticks = pd.read_parquet(ticks_path)
                 runners = {int(k): v for k, v in json.loads(runners_path.read_text()).items()}
@@ -188,15 +315,33 @@ def build_market_lookup(
                     else join_row["market_time"].iloc[0]
                 )
                 if chase_sel is None:
-                    cache[match_id] = pd.DataFrame(columns=["pt_ms", "market_prob_chasing"])
+                    cache[match_id] = (pd.DataFrame(columns=["pt_ms", "market_prob_chasing"]), None)
                 else:
-                    cache[match_id] = chase_window_prices(ticks, runners, chase_sel, market_time)
+                    cp = chase_window_prices(ticks, runners, chase_sel, market_time)
+                    anchors: list[tuple[int, int]] | None = None
+                    if not cp.empty:
+                        wickets = wicket_ball_indices(balls, match_id)
+                        drops = detect_price_drops(cp)
+                        chase_start = int(cp["pt_ms"].iloc[0])
+                        chase_end = find_chase_uncertain_end(cp) or int(cp["pt_ms"].iloc[-1])
+                        # Use the actual last ball index for this match as the
+                        # end-anchor ball position. Cricsheet often has chases
+                        # ending early (won with overs to spare), so 120 is wrong.
+                        last_idx = int(predictions[predictions["match_id"] == match_id]["ball_index"].max())
+                        anchors = build_anchors(
+                            wickets, drops, chase_start, chase_end, last_ball_index=last_idx,
+                        )
+                        if anchors is not None:
+                            n_with_anchors += 1
+                    cache[match_id] = (cp, anchors)
 
-        out_rows.append(market_prob_at_ball(cache[match_id], int(row.ball_index)))
+        cp, anchors = cache[match_id]
+        out_rows.append(market_prob_at_ball(cp, int(row.ball_index), anchors=anchors))
 
     result = predictions.copy()
     result["market_prob"] = out_rows
     matched = result["market_prob"].notna().sum()
+    logger.info("anchored %d / %d matches via wicket-event matching", n_with_anchors, len(cache))
     logger.info(
         "aligned %d / %d prediction rows to Betfair prices",
         matched, len(result),
