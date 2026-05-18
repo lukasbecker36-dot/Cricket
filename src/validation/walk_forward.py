@@ -106,22 +106,36 @@ def walk_forward(
             logger.warning("empty dataset for season %d", test_season)
             continue
 
-        # carve a tail of training data as a validation set for early stopping + calibration
-        cut = int(len(train_df) * 0.9)
-        train_part = train_df.iloc[:cut]
-        valid_part = train_df.iloc[cut:]
+        # Hold out the TWO most recent training seasons as a dedicated calibration set.
+        # The remaining seasons go to fit; a small tail of the fit set drives early stopping.
+        # Rationale: calibration set should be closest-in-distribution to test, NOT random,
+        # but a single season is fragile when that season is unusual (e.g. COVID 2020/2021).
+        calibration_seasons = {test_season - 1, test_season - 2}
+        fit_df = train_df[~train_df["season"].isin(calibration_seasons)]
+        calib_df = train_df[train_df["season"].isin(calibration_seasons)]
 
-        # recency weighting: weight = decay^(test_season - 1 - season)
-        # so the most recent training season has weight 1.0 and older seasons decay.
+        if calib_df.empty or len(fit_df) < 5000:
+            # Fallback for very-early folds where train pool is too thin to split.
+            cut = int(len(train_df) * 0.9)
+            fit_df = train_df.iloc[:cut]
+            calib_df = train_df.iloc[cut:]
+            logger.info("season %d: fell back to random-tail calibration", test_season)
+
+        cut = int(len(fit_df) * 0.9)
+        train_part = fit_df.iloc[:cut]
+        early_stop_part = fit_df.iloc[cut:]
+
+        # recency weighting: weight = decay^(test_season - 1 - season).
+        # At decay=1.0 (default) this is a no-op; kept for future experiments.
         ref_season = test_season - 1
         weights = np.power(
             cfg.recency_decay,
             np.maximum(ref_season - train_part["season"].to_numpy(), 0),
         ).astype(np.float32)
 
-        model = train_lightgbm(train_part, valid_part, cfg, train_weights=weights)
-        raw_valid = model.booster.predict(valid_part[FEATURE_COLUMNS].to_numpy(dtype=np.float32))
-        calibrator = fit_isotonic(np.asarray(raw_valid), valid_part["label"].to_numpy())
+        model = train_lightgbm(train_part, early_stop_part, cfg, train_weights=weights)
+        raw_calib = model.booster.predict(calib_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32))
+        calibrator = fit_isotonic(np.asarray(raw_calib), calib_df["label"].to_numpy())
 
         raw_test = model.booster.predict(test_df[FEATURE_COLUMNS].to_numpy(dtype=np.float32))
         p_test = calibrator.predict(np.asarray(raw_test))
