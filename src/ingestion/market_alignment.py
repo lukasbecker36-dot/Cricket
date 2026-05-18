@@ -28,8 +28,13 @@ from .betfair_loader import (
 logger = logging.getLogger(__name__)
 
 # Decision lag: model output at time T cannot trade on prices at time T (CLAUDE.md).
-# Use the prevailing price at T+5s to avoid look-ahead.
-DECISION_LAG_MS = 5_000
+# Our ball-index -> wall-time map is linear and accurate only to within minutes,
+# so a 5s positive lag is meaningless. We instead use a NEGATIVE lag (we look at
+# prices that are 60s STALE relative to our projected wall-time) so any timing
+# uncertainty biases us toward older prices, not future ones. This is the
+# rigorous direction: if model edge survives looking at stale prices, the edge
+# is more likely real than a timing artefact.
+DECISION_LAG_MS = -60_000
 
 
 def chasing_selection_id(
@@ -61,19 +66,65 @@ def market_time_ms(market_time_iso: str) -> int:
     return int(dt.timestamp() * 1000)
 
 
+# Maximum plausible innings-2 wall duration. Chases usually finish in ~90 min;
+# slow chases or rain-interrupted matches can stretch to ~110. Anything past
+# this from the detected start is treated as post-match / settled and ignored.
+INNINGS2_MAX_DURATION_MIN = 110
+# A gap shorter than this within the match window is NOT an innings break.
+MIN_GAP_FOR_BREAK_MIN = 5
+
+
+def detect_innings2_window(
+    prob: pd.DataFrame, market_time_anchor_ms: int
+) -> tuple[int, int] | tuple[None, None]:
+    """Identify innings-2 start/end from the price-action gap.
+
+    The innings break (~15-20 min) is typically the largest pause between
+    consecutive ticks within the match wall window. We look in a wide window
+    around marketTime, find the largest inter-tick gap, and treat the next
+    tick as innings-2 start. The end is capped at start + 110 min to exclude
+    post-settlement ticks where one side has converged to ~1.01.
+    """
+    if prob.empty:
+        return None, None
+    wide_start = market_time_anchor_ms - 30 * 60_000  # marketTime can be off
+    wide_end = market_time_anchor_ms + 5 * 60 * 60_000
+    w = prob[(prob["pt_ms"] >= wide_start) & (prob["pt_ms"] <= wide_end)].copy()
+    if len(w) < 10:
+        return None, None
+    w = w.sort_values("pt_ms").reset_index(drop=True)
+    diffs = w["pt_ms"].diff()
+    biggest_idx = int(diffs.idxmax())
+    biggest_gap_ms = float(diffs.iloc[biggest_idx])
+    if biggest_gap_ms < MIN_GAP_FOR_BREAK_MIN * 60_000:
+        return None, None
+    start = int(w["pt_ms"].iloc[biggest_idx])
+    end_cap = start + INNINGS2_MAX_DURATION_MIN * 60_000
+    last_observed = int(w["pt_ms"].iloc[-1])
+    end = min(end_cap, last_observed)
+    return start, end
+
+
 def chase_window_prices(
     ticks: pd.DataFrame,
     runners: dict[int, str],
     chasing_sel: int,
     market_time_iso: str,
 ) -> pd.DataFrame:
-    """Return a (pt_ms, market_prob_chasing) frame for the chase window only."""
+    """Return a (pt_ms, market_prob_chasing) frame for the chase window only.
+
+    First tries gap-detection to anchor on the real innings break. Falls back
+    to the heuristic marketTime + 115min..215min window when no clear break
+    is detected (e.g. pre-2018 markets where tick density was lower).
+    """
     prob = implied_market_probability(ticks, chasing_sel)
     if prob.empty:
         return prob
     mt = market_time_ms(market_time_iso)
-    start = mt + CHASE_OFFSET_START_MIN * 60_000
-    end = mt + CHASE_OFFSET_END_MIN * 60_000
+    start, end = detect_innings2_window(prob, mt)
+    if start is None:
+        start = mt + CHASE_OFFSET_START_MIN * 60_000
+        end = mt + CHASE_OFFSET_END_MIN * 60_000
     in_chase = prob[(prob["pt_ms"] >= start) & (prob["pt_ms"] <= end)].copy()
     return in_chase.reset_index(drop=True)
 

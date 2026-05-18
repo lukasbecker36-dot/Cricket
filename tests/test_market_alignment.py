@@ -47,18 +47,20 @@ def test_market_prob_at_ball_first_and_last():
     })
     # ball 0 -> first quartile of window
     p0 = market_prob_at_ball(chase, 0, total_balls=120)
-    # ball 120 -> end of window
+    # ball 120 -> end of window. With -60s stale lag, target = 4_000_000 - 60_000
+    # = 3_940_000; prior tick at or before is 3_000_000 (0.7).
     p_end = market_prob_at_ball(chase, 120, total_balls=120)
     assert p0 == 0.5  # earliest tick (no prior, falls back to first)
-    assert p_end == 0.8  # last tick
+    assert p_end == 0.7
 
 
 def test_market_prob_at_ball_midpoint():
-    # Chase window 1_000_000 to 4_000_000 ms. Ball 60/120 -> target ~2_500_000 + 5s lag.
+    # Chase window 1_000_000 to 4_000_000 ms. Ball 60/120 -> target ~2_500_000.
+    # With a -60s decision lag (we use STALE prices), target shifts to ~2_440_000.
     chase = pd.DataFrame({
         "pt_ms": [1_000_000, 2_000_000, 3_000_000, 4_000_000],
         "market_prob_chasing": [0.5, 0.6, 0.7, 0.8],
     })
     p_mid = market_prob_at_ball(chase, 60, total_balls=120)
-    # target = 2_505_000; prevailing price at or before is 0.6 (the 2_000_000 tick)
+    # prevailing price at or before 2_440_000 is 0.6 (the 2_000_000 tick)
     assert p_mid == 0.6

@@ -106,6 +106,19 @@ def main() -> int:
                 int(season), len(group), group["pnl"].sum(),
                 group["pnl"].sum() / stake_total if stake_total else 0.0,
             )
+        # Phase split: ball_index < 60 = early/mid chase, >= 60 = late chase.
+        # If the leak hypothesis is right, edge concentrates in late where the
+        # market has converged toward the outcome and our wall-time alignment
+        # error is most damaging.
+        early = trades[trades["ball_index"] < 60]
+        late = trades[trades["ball_index"] >= 60]
+        for label, df in (("early (ball<60)", early), ("late (ball>=60)", late)):
+            stake_total = 100.0 * len(df)
+            roi = df["pnl"].sum() / stake_total if stake_total else 0.0
+            logger.info(
+                "  %s: n=%d pnl=%.2f roi=%.3f",
+                label, len(df), df["pnl"].sum(), roi,
+            )
     else:
         rng = np.random.default_rng(cfg.model.seed)
         bt = run_backtest(combined, cfg.backtest, rng=rng)
