@@ -1,0 +1,25 @@
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  cache_dir: data/cache
+  cricsheet_url: https://cricsheet.org/downloads/ipl_json.zip
+
+model:
+  seed: 17
+  learning_rate: 0.05
+  num_leaves: 63
+  min_data_in_leaf: 200
+  n_estimators: 1000
+  early_stopping_rounds: 50
+
+validation:
+  train_seasons: [2008, 2009, 2010, 2011, 2012, 2013, 2014, 2015, 2016, 2017, 2018, 2019, 2020]
+  test_seasons: [2021, 2022, 2023, 2024]
+  min_balls_into_chase: 6
+
+backtest:
+  commission: 0.05
+  slippage_ticks: 1
+  decision_lag_seconds: 5
+  edge_threshold: 0.05
+  min_liquidity_gbp: 100.0

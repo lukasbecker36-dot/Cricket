@@ -1,0 +1,39 @@
+# Data — never commit
+data/raw/
+data/processed/
+data/cache/
+data/live/
+*.parquet
+*.zip
+
+# Models
+models/
+*.pkl
+*.joblib
+*.txt.lgb
+
+# Secrets
+.env
+*.key
+credentials.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Notebooks (allow in notebooks/ only)
+.ipynb_checkpoints/
