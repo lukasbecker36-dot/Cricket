@@ -8,7 +8,7 @@ import pandas as pd
 from .player_quality import (
     LEAGUE_ECON_MEAN,
     PlayerStats,
-    shrunk_economy,
+    phase_shrunk_economy,
     shrunk_strike_rate,
 )
 from .rolling_form import recent_sr
@@ -50,44 +50,70 @@ def venue_par_score(venue_pars: pd.Series, venue: str, league_mean: float = 165.
     return float(val)
 
 
+def phase_balls_remaining(legal_balls_bowled: int) -> dict[int, int]:
+    """How many legal balls remain in each phase from the current position."""
+    end_of_phase = {0: 36, 1: 90, 2: 120}
+    pp_end, mid_end, total = 36, 90, 120
+    remaining = {0: 0, 1: 0, 2: 0}
+    if legal_balls_bowled < pp_end:
+        remaining[0] = pp_end - legal_balls_bowled
+        remaining[1] = mid_end - pp_end
+        remaining[2] = total - mid_end
+    elif legal_balls_bowled < mid_end:
+        remaining[1] = mid_end - legal_balls_bowled
+        remaining[2] = total - mid_end
+    elif legal_balls_bowled < total:
+        remaining[2] = total - legal_balls_bowled
+    _ = end_of_phase  # silence unused
+    return remaining
+
+
 def remaining_bowling_quality(
     bowlers_used: dict[str, int],
     legal_balls_bowled: int,
     stats: PlayerStats,
 ) -> tuple[float, float, int]:
-    """Estimate quality of bowling overs still to be bowled.
+    """Estimate quality of bowling overs still to be bowled, phase-aware.
 
     Returns (expected_econ, best_bowler_overs_left, n_bowlers_with_overs_left).
 
-    Logic: each bowler can bowl max 24 legal balls (4 overs). For each bowler who
-    has bowled, remaining = 24 - balls_bowled. Total innings has 120 legal balls;
-    "unknown" remaining overs (= total - sum of known remaining) get filled at
-    the league-mean economy. Final econ = ball-weighted average across known and
-    unknown remaining balls.
+    Each bowler can bowl max 24 legal balls. We assume bowlers who have overs
+    left are equally likely to bowl each remaining ball (rough but unbiased
+    given we cannot model captain decisions). For each phase, expected runs =
+    avg(phase-shrunk econ across bowlers with overs left, weighted by their
+    remaining capacity) * balls_in_phase. Unknown remaining balls (capacity
+    deficit) fill at the league phase mean.
     """
     total_remaining = max(0, 120 - legal_balls_bowled)
     if total_remaining == 0:
         return LEAGUE_ECON_MEAN, 0.0, 0
 
-    known_remaining_balls = 0
-    known_runs_per_ball_weighted = 0.0  # sum of (balls_left * econ/6)
-    best_left = 0
-    n_with_left = 0
-    for bowler, used in bowlers_used.items():
-        left = max(0, 24 - used)
-        if left == 0:
-            continue
-        n_with_left += 1
-        if left > best_left:
-            best_left = left
-        known_remaining_balls += left
-        econ = shrunk_economy(stats, bowler)
-        known_runs_per_ball_weighted += left * (econ / 6.0)
+    bowlers_with_capacity = [
+        (b, max(0, 24 - used)) for b, used in bowlers_used.items() if 24 - used > 0
+    ]
+    best_left = max((c for _, c in bowlers_with_capacity), default=0)
+    n_with_left = len(bowlers_with_capacity)
+    total_capacity = sum(c for _, c in bowlers_with_capacity)
 
-    unknown_balls = max(0, total_remaining - known_remaining_balls)
-    unknown_runs = unknown_balls * (LEAGUE_ECON_MEAN / 6.0)
-    expected_runs = known_runs_per_ball_weighted + unknown_runs
-    expected_econ = expected_runs / total_remaining * 6.0
+    phase_rem = phase_balls_remaining(legal_balls_bowled)
+    expected_runs_total = 0.0
+    for phase, balls_in_phase in phase_rem.items():
+        if balls_in_phase == 0:
+            continue
+        if total_capacity > 0:
+            weighted_econ = sum(
+                cap * phase_shrunk_economy(stats, b, phase)
+                for b, cap in bowlers_with_capacity
+            ) / total_capacity
+        else:
+            weighted_econ = stats.league_phase_economy.get(phase, LEAGUE_ECON_MEAN)
+        # capacity_share: fraction of remaining balls covered by known bowlers
+        capacity_share = min(1.0, total_capacity / total_remaining) if total_remaining else 0
+        unknown_econ = stats.league_phase_economy.get(phase, LEAGUE_ECON_MEAN)
+        blended = capacity_share * weighted_econ + (1 - capacity_share) * unknown_econ
+        expected_runs_total += balls_in_phase * (blended / 6.0)
+
+    expected_econ = expected_runs_total / total_remaining * 6.0
     return expected_econ, best_left / 6.0, n_with_left
 
 
@@ -115,7 +141,7 @@ def features_from_state(
         "non_striker_balls_faced": float(state.non_striker_balls_faced),
         "striker_sr": shrunk_strike_rate(stats, state.striker),
         "non_striker_sr": shrunk_strike_rate(stats, state.non_striker),
-        "bowler_econ": shrunk_economy(stats, state.bowler),
+        "bowler_econ": phase_shrunk_economy(stats, state.bowler, state.phase),
         "venue_par": venue_par_score(venue_pars, state.venue),
         "target": float(state.target),
         "runs_last_12_balls": float(state.runs_last_12_balls),

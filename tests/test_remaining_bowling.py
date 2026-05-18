@@ -5,13 +5,23 @@ from src.features.player_quality import LEAGUE_ECON_MEAN, PlayerStats
 
 
 def stats_with(bowler_econs: dict[str, float], balls_each: int = 600) -> PlayerStats:
-    """Build PlayerStats with given career economies for bowlers. balls_each large
-    enough that shrinkage barely moves the value."""
+    """Build PlayerStats with given career economies for bowlers, replicated across
+    all three phases. balls_each large enough that shrinkage barely moves the value."""
+    phase_runs = {}
+    phase_balls = {}
+    per_phase_balls = balls_each // 3
+    for bowler, econ in bowler_econs.items():
+        for phase in (0, 1, 2):
+            phase_balls[(bowler, phase)] = per_phase_balls
+            phase_runs[(bowler, phase)] = int(econ * per_phase_balls / 6.0)
     return PlayerStats(
         batting_strike_rate=pd.Series(dtype=float),
         batting_balls_faced=pd.Series(dtype=float),
         bowler_economy=pd.Series(bowler_econs),
         bowler_balls=pd.Series({b: balls_each for b in bowler_econs}),
+        bowler_phase_runs=phase_runs,
+        bowler_phase_balls=phase_balls,
+        league_phase_economy={0: 8.2, 1: 8.2, 2: 8.2},
     )
 
 
