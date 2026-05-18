@@ -191,6 +191,7 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
     legal = 0
     balls_faced: dict[str, int] = {}
     bowlers_used: dict[str, int] = {}
+    partnership_balls = 0
 
     # history: one entry per delivery (legal or not). Each is (runs, wicket, is_legal, is_boundary)
     history: list[tuple[int, bool, bool, bool]] = []
@@ -253,6 +254,7 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
             wickets_last_18_balls=wkts_18,
             boundaries_last_over=boundaries,
             bowlers_used=dict(bowlers_used),
+            partnership_balls=partnership_balls,
             label=label,
         )
 
@@ -268,5 +270,7 @@ def replay_chase(match_balls: pd.DataFrame, label: int) -> Iterator[ChaseState]:
             legal += 1
             balls_faced[striker] = balls_faced.get(striker, 0) + 1
             bowlers_used[bowler] = bowlers_used.get(bowler, 0) + 1
+            partnership_balls += 1
         if is_wicket:
             wickets += 1
+            partnership_balls = 0  # new pair after the dismissal

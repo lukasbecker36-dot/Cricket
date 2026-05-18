@@ -25,6 +25,8 @@ class ChaseState(BaseModel):
     boundaries_last_over: int = 0
     # bowler -> legal balls already bowled by them in this innings
     bowlers_used: dict[str, int] = {}
+    # Legal balls the current striker+non-striker pair has played together. Resets on wicket.
+    partnership_balls: int = 0
     label: int | None = None  # 1 if chasing team won, 0 if not; None for live
 
     @property
