@@ -7,8 +7,10 @@ import pandas as pd
 
 from .player_quality import (
     LEAGUE_ECON_MEAN,
+    LEAGUE_WICKET_RATE,
     PlayerStats,
     phase_shrunk_economy,
+    phase_shrunk_wicket_rate,
     shrunk_strike_rate,
 )
 from .rolling_form import recent_sr
@@ -72,21 +74,15 @@ def remaining_bowling_quality(
     bowlers_used: dict[str, int],
     legal_balls_bowled: int,
     stats: PlayerStats,
-) -> tuple[float, float, int]:
-    """Estimate quality of bowling overs still to be bowled, phase-aware.
+) -> tuple[float, float, int, float]:
+    """Phase-aware quality estimate for the bowling overs still to be bowled.
 
-    Returns (expected_econ, best_bowler_overs_left, n_bowlers_with_overs_left).
-
-    Each bowler can bowl max 24 legal balls. We assume bowlers who have overs
-    left are equally likely to bowl each remaining ball (rough but unbiased
-    given we cannot model captain decisions). For each phase, expected runs =
-    avg(phase-shrunk econ across bowlers with overs left, weighted by their
-    remaining capacity) * balls_in_phase. Unknown remaining balls (capacity
-    deficit) fill at the league phase mean.
+    Returns (expected_econ, best_bowler_overs_left, n_bowlers_with_overs_left,
+    expected_wicket_rate).
     """
     total_remaining = max(0, 120 - legal_balls_bowled)
     if total_remaining == 0:
-        return LEAGUE_ECON_MEAN, 0.0, 0
+        return LEAGUE_ECON_MEAN, 0.0, 0, LEAGUE_WICKET_RATE
 
     bowlers_with_capacity = [
         (b, max(0, 24 - used)) for b, used in bowlers_used.items() if 24 - used > 0
@@ -97,6 +93,7 @@ def remaining_bowling_quality(
 
     phase_rem = phase_balls_remaining(legal_balls_bowled)
     expected_runs_total = 0.0
+    expected_wickets_total = 0.0
     for phase, balls_in_phase in phase_rem.items():
         if balls_in_phase == 0:
             continue
@@ -105,16 +102,24 @@ def remaining_bowling_quality(
                 cap * phase_shrunk_economy(stats, b, phase)
                 for b, cap in bowlers_with_capacity
             ) / total_capacity
+            weighted_wkt = sum(
+                cap * phase_shrunk_wicket_rate(stats, b, phase)
+                for b, cap in bowlers_with_capacity
+            ) / total_capacity
         else:
             weighted_econ = stats.league_phase_economy.get(phase, LEAGUE_ECON_MEAN)
-        # capacity_share: fraction of remaining balls covered by known bowlers
+            weighted_wkt = stats.league_phase_wicket_rate.get(phase, LEAGUE_WICKET_RATE)
         capacity_share = min(1.0, total_capacity / total_remaining) if total_remaining else 0
         unknown_econ = stats.league_phase_economy.get(phase, LEAGUE_ECON_MEAN)
-        blended = capacity_share * weighted_econ + (1 - capacity_share) * unknown_econ
-        expected_runs_total += balls_in_phase * (blended / 6.0)
+        unknown_wkt = stats.league_phase_wicket_rate.get(phase, LEAGUE_WICKET_RATE)
+        blended_econ = capacity_share * weighted_econ + (1 - capacity_share) * unknown_econ
+        blended_wkt = capacity_share * weighted_wkt + (1 - capacity_share) * unknown_wkt
+        expected_runs_total += balls_in_phase * (blended_econ / 6.0)
+        expected_wickets_total += balls_in_phase * blended_wkt
 
     expected_econ = expected_runs_total / total_remaining * 6.0
-    return expected_econ, best_left / 6.0, n_with_left
+    expected_wkt_rate = expected_wickets_total / total_remaining
+    return expected_econ, best_left / 6.0, n_with_left, expected_wkt_rate
 
 
 def features_from_state(
@@ -128,7 +133,7 @@ def features_from_state(
     if rrr == float("inf"):
         rrr = 36.0  # cap: > any realistic value, model treats as "lost"
     rf = rolling_form or {}
-    rem_econ, best_left, n_left = remaining_bowling_quality(
+    rem_econ, best_left, n_left, rem_wkt = remaining_bowling_quality(
         state.bowlers_used, state.legal_balls_bowled, stats
     )
     return {

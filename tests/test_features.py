@@ -14,7 +14,9 @@ def empty_stats():
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={},
         bowler_phase_balls={},
+        bowler_phase_wickets={},
         league_phase_economy={0: 8.0, 1: 8.0, 2: 8.0},
+        league_phase_wicket_rate={0: 0.04, 1: 0.04, 2: 0.04},
     )
 
 
@@ -46,7 +48,9 @@ def test_shrinkage_pulls_small_sample_toward_prior():
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={},
         bowler_phase_balls={},
+        bowler_phase_wickets={},
         league_phase_economy={0: 8.0, 1: 8.0, 2: 8.0},
+        league_phase_wicket_rate={0: 0.04, 1: 0.04, 2: 0.04},
     )
     # 10 balls at SR 200 with prior=60 at mean=130 -> (10*200 + 60*130)/70 = (2000+7800)/70
     sr = shrunk_strike_rate(stats, "A", league_mean=130.0)

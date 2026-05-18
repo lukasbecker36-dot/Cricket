@@ -23,7 +23,9 @@ class PlayerStats:
     # is 0=powerplay, 1=middle, 2=death. Missing entries fall back to league mean.
     bowler_phase_runs: dict
     bowler_phase_balls: dict
+    bowler_phase_wickets: dict  # bowler-credited dismissals only
     league_phase_economy: dict  # phase -> league-wide economy from same window
+    league_phase_wicket_rate: dict  # phase -> wickets per legal ball, league-wide
 
 
 SHRINK_PRIOR_BALLS = 60  # ~10 overs faced; conservative
@@ -32,6 +34,13 @@ SHRINK_PRIOR_PHASE_BALLS = 30  # phase samples are sparser; smaller prior
 LEAGUE_SR_MEAN = 130.0
 LEAGUE_ECON_MEAN = 8.2
 LEAGUE_BOUNDARY_RATE = 0.135  # ~13.5% of legal balls go for 4 or 6 in T20
+LEAGUE_WICKET_RATE = 0.04  # ~1 bowler-credited wicket per 25 legal balls
+
+# Dismissals credited to the bowler. Run-outs and self-dismissals are excluded
+# because we want a bowler-skill signal, not "wickets fell while this bowler bowled".
+BOWLER_DISMISSAL_KINDS = frozenset({
+    "bowled", "caught", "caught and bowled", "lbw", "stumped", "hit wicket",
+})
 
 
 def over_to_phase(over: int) -> int:
@@ -55,7 +64,9 @@ def compute_player_stats(balls: pd.DataFrame, up_to_season: int) -> PlayerStats:
             bowler_balls=empty_s,
             bowler_phase_runs={},
             bowler_phase_balls={},
+            bowler_phase_wickets={},
             league_phase_economy={0: LEAGUE_ECON_MEAN, 1: LEAGUE_ECON_MEAN, 2: LEAGUE_ECON_MEAN},
+            league_phase_wicket_rate={0: LEAGUE_WICKET_RATE, 1: LEAGUE_WICKET_RATE, 2: LEAGUE_WICKET_RATE},
         )
 
     bat_legal = past[past["is_legal_delivery"]]
@@ -75,12 +86,24 @@ def compute_player_stats(balls: pd.DataFrame, up_to_season: int) -> PlayerStats:
     bowl["phase"] = bowl["over"].apply(over_to_phase)
     phase_runs = bowl.groupby(["bowler", "phase"])["runs_total"].sum().to_dict()
     phase_balls = bowl.groupby(["bowler", "phase"]).size().to_dict()
+    bowler_credited = bowl["wicket"] & bowl["dismissal_kind"].isin(BOWLER_DISMISSAL_KINDS)
+    phase_wickets = (
+        bowl[bowler_credited].groupby(["bowler", "phase"]).size().to_dict()
+    )
     league_phase = (
         bowl.groupby("phase").apply(lambda g: g["runs_total"].sum() / len(g) * 6.0).to_dict()
     )
     league_phase = {int(k): float(v) for k, v in league_phase.items()}
+    league_phase_wkt = (
+        bowl.assign(_bc=bowler_credited)
+        .groupby("phase")
+        .apply(lambda g: g["_bc"].sum() / len(g))
+        .to_dict()
+    )
+    league_phase_wkt = {int(k): float(v) for k, v in league_phase_wkt.items()}
     for p in (0, 1, 2):
         league_phase.setdefault(p, LEAGUE_ECON_MEAN)
+        league_phase_wkt.setdefault(p, LEAGUE_WICKET_RATE)
 
     return PlayerStats(
         batting_strike_rate=bat_sr,
@@ -90,7 +113,9 @@ def compute_player_stats(balls: pd.DataFrame, up_to_season: int) -> PlayerStats:
         bowler_balls=bowl_balls,
         bowler_phase_runs=phase_runs,
         bowler_phase_balls=phase_balls,
+        bowler_phase_wickets=phase_wickets,
         league_phase_economy=league_phase,
+        league_phase_wicket_rate=league_phase_wkt,
     )
 
 
@@ -102,6 +127,17 @@ def phase_shrunk_economy(stats: PlayerStats, bowler: str, phase: int) -> float:
     runs = stats.bowler_phase_runs.get((bowler, phase), 0)
     econ = runs / balls * 6.0
     return (balls * econ + SHRINK_PRIOR_PHASE_BALLS * league) / (balls + SHRINK_PRIOR_PHASE_BALLS)
+
+
+def phase_shrunk_wicket_rate(stats: PlayerStats, bowler: str, phase: int) -> float:
+    """Shrunk wickets per legal ball for `bowler` in `phase`. Bowler-credited only."""
+    league = stats.league_phase_wicket_rate.get(phase, LEAGUE_WICKET_RATE)
+    balls = stats.bowler_phase_balls.get((bowler, phase), 0)
+    if balls == 0:
+        return league
+    wkts = stats.bowler_phase_wickets.get((bowler, phase), 0)
+    rate = wkts / balls
+    return (balls * rate + SHRINK_PRIOR_PHASE_BALLS * league) / (balls + SHRINK_PRIOR_PHASE_BALLS)
 
 
 def shrunk_strike_rate(stats: PlayerStats, player: str, league_mean: float = 130.0) -> float:

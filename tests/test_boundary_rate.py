@@ -13,7 +13,9 @@ def stats(rate: float | None, balls: int) -> PlayerStats:
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={},
         bowler_phase_balls={},
+        bowler_phase_wickets={},
         league_phase_economy={0: 8.0, 1: 8.0, 2: 8.0},
+        league_phase_wicket_rate={0: 0.04, 1: 0.04, 2: 0.04},
     )
 
 

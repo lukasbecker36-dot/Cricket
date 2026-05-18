@@ -28,7 +28,9 @@ def test_phase_economy_returns_league_for_unknown_bowler():
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={},
         bowler_phase_balls={},
+        bowler_phase_wickets={},
         league_phase_economy={0: 7.5, 1: 8.3, 2: 10.0},
+        league_phase_wicket_rate={0: 0.04, 1: 0.04, 2: 0.06},
     )
     assert phase_shrunk_economy(stats, "nobody", 0) == 7.5
     assert phase_shrunk_economy(stats, "nobody", 2) == 10.0
@@ -47,7 +49,9 @@ def test_phase_economy_distinguishes_phases_for_same_bowler():
         bowler_balls=pd.Series(dtype=float),
         bowler_phase_runs={("BUMRAH", 0): pp_runs, ("BUMRAH", 2): death_runs},
         bowler_phase_balls={("BUMRAH", 0): pp_balls, ("BUMRAH", 2): death_balls},
+        bowler_phase_wickets={},
         league_phase_economy={0: 7.5, 1: 8.3, 2: 10.0},
+        league_phase_wicket_rate={0: 0.04, 1: 0.04, 2: 0.06},
     )
     pp_econ = phase_shrunk_economy(stats, "BUMRAH", 0)
     death_econ = phase_shrunk_economy(stats, "BUMRAH", 2)
