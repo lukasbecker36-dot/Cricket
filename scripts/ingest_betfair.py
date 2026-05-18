@@ -41,12 +41,21 @@ def main() -> int:
     configure_logging()
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", default=Path("data/raw/betfair/betfair_raw.dat"), type=Path)
-    parser.add_argument("--index", default=Path("data/processed/betfair_ipl_index.json"), type=Path)
-    parser.add_argument(
-        "--matches", default=Path("data/processed/matches.parquet"), type=Path
-    )
-    parser.add_argument("--out", default=Path("data/processed/betfair"), type=Path)
+    parser.add_argument("--league", default="ipl", help="league code: ipl, bbl, psl, cpl, ntb, ...")
+    parser.add_argument("--index", default=None, type=Path)
+    parser.add_argument("--matches", default=None, type=Path)
+    parser.add_argument("--out", default=None, type=Path)
     args = parser.parse_args()
+
+    # Default paths derived from league
+    league = args.league
+    cricsheet_dir = Path("data/processed") if league == "ipl" else Path(f"data/processed/{league}")
+    if args.index is None:
+        args.index = Path(f"data/processed/betfair_{league}_index.json")
+    if args.matches is None:
+        args.matches = cricsheet_dir / "matches.parquet"
+    if args.out is None:
+        args.out = cricsheet_dir / "betfair"
 
     index = json.loads(args.index.read_text())
     cricsheet = pd.read_parquet(args.matches)
@@ -54,7 +63,7 @@ def main() -> int:
 
     joined = match_betfair_to_cricsheet(index, cricsheet, TEAM_ALIASES)
     args.out.mkdir(parents=True, exist_ok=True)
-    join_path = args.out.parent / "betfair_join.parquet"
+    join_path = cricsheet_dir / "betfair_join.parquet"
     joined.to_parquet(join_path, index=False)
     logger.info("matched %d / %d Betfair markets to Cricsheet match_ids", len(joined), len(index))
 

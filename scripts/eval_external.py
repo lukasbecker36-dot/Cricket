@@ -20,10 +20,12 @@ import pandas as pd
 
 from src.config import Config
 from src.features.engineering import FEATURE_COLUMNS
+from src.ingestion.market_alignment import build_market_lookup
 from src.ingestion.storage import read_balls
 from src.logging_setup import configure_logging
 from src.model.calibration import fit_isotonic
 from src.model.train import train_lightgbm
+from src.validation.backtest import run_backtest
 from src.validation.metrics import evaluate
 from src.validation.walk_forward import build_dataset
 
@@ -133,6 +135,56 @@ def main() -> int:
             "  season=%d n=%d logloss=%.4f brier=%.4f acc@.5=%.3f ECE=%.4f",
             int(season), m.n, m.log_loss, m.brier, m.accuracy_at_50, m.calibration.ece,
         )
+
+    # --- Optional Betfair backtest if prices exist for this league ---
+    betfair_join_path = external_dir / "betfair_join.parquet"
+    betfair_dir = external_dir / "betfair"
+    if not (betfair_join_path.exists() and betfair_dir.exists()):
+        logger.info("no Betfair data for %s; skipping backtest", args.league)
+        return 0
+
+    predictions = test_df.reset_index(drop=True).copy()
+    predictions["p"] = p_test
+    predictions["y"] = y_test
+    keep = ["match_id", "season", "ball_index", "p", "y"]
+    predictions = predictions[keep]
+
+    join_df = pd.read_parquet(betfair_join_path)
+    aligned = build_market_lookup(predictions, external_balls, betfair_dir, join_df)
+    n_with_market = aligned["market_prob"].notna().sum()
+    logger.info(
+        "%s Betfair coverage: %d / %d prediction rows (%.1f%%)",
+        args.league.upper(), n_with_market, len(aligned),
+        100.0 * n_with_market / max(len(aligned), 1),
+    )
+    if n_with_market == 0:
+        logger.warning("no aligned rows; skipping backtest")
+        return 0
+
+    bt_input = aligned.dropna(subset=["market_prob"]).reset_index(drop=True)
+    market_implied = bt_input["market_prob"].astype(float).reset_index(drop=True)
+    bt = run_backtest(bt_input, cfg.backtest, market_implied=market_implied)
+    logger.info(
+        "%s BACKTEST: n_trades=%d pnl=%.2f roi=%.3f maxDD=%.2f",
+        args.league.upper(), bt.n_trades, bt.total_pnl, bt.roi, bt.max_drawdown,
+    )
+    trades = bt.trades.merge(
+        bt_input[["match_id", "ball_index", "season"]],
+        on=["match_id", "ball_index"], how="left",
+    )
+    for season, group in trades.groupby("season"):
+        stake_total = 100.0 * len(group)
+        roi = group["pnl"].sum() / stake_total if stake_total else 0.0
+        logger.info(
+            "  season=%d n=%d pnl=%.2f roi=%.3f",
+            int(season), len(group), group["pnl"].sum(), roi,
+        )
+    early = trades[trades["ball_index"] < 60]
+    late = trades[trades["ball_index"] >= 60]
+    for label, df in (("early (ball<60)", early), ("late (ball>=60)", late)):
+        stake_total = 100.0 * len(df)
+        roi = df["pnl"].sum() / stake_total if stake_total else 0.0
+        logger.info("  %s: n=%d pnl=%.2f roi=%.3f", label, len(df), df["pnl"].sum(), roi)
     return 0
 
 
