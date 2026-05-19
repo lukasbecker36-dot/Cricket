@@ -162,6 +162,9 @@ def main() -> int:
         return 0
 
     bt_input = aligned.dropna(subset=["market_prob"]).reset_index(drop=True)
+    # Save aligned predictions for the sweep script. Path is unique per league
+    # so multi-league sweeps don't collide.
+    bt_input.to_parquet(external_dir / "eval_predictions.parquet", index=False)
     market_implied = bt_input["market_prob"].astype(float).reset_index(drop=True)
     bt = run_backtest(bt_input, cfg.backtest, market_implied=market_implied)
     logger.info(

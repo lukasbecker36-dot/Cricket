@@ -80,6 +80,7 @@ def main() -> int:
         )
         # Backtest on the subset where we actually have prices
         bt_input = combined.dropna(subset=["market_prob"]).copy()
+        bt_input.to_parquet(cfg.data.processed_dir / "eval_predictions.parquet", index=False)
         market_implied = bt_input["market_prob"].astype(float)
         bt = run_backtest(bt_input, cfg.backtest, market_implied=market_implied.reset_index(drop=True))
         logger.info(
