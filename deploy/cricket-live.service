@@ -1,0 +1,23 @@
+[Unit]
+Description=Cricket live Betfair signal runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cricket
+WorkingDirectory=/opt/cricket
+EnvironmentFile=/etc/cricket/live.env
+ExecStart=/opt/cricket/.venv/bin/python -m scripts.live_signals
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/cricket/data /opt/cricket/models
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
