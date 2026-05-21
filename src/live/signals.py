@@ -81,10 +81,12 @@ class FullInningsModel:
 
     def predict_p(self, *, threshold_X: int, implied_open: float,
                   batting_team: str, bowling_team: str, venue: str,
-                  season: int, innings: int, league: str | None) -> float:
+                  season: int, innings: int, league: str | None,
+                  target: float | None = None) -> float:
         bat_prior = self._lookup(self.bat_pp, batting_team, season)
         bowl_prior = self._lookup(self.bowl_pp, bowling_team, season)
         v_par = self._lookup(self.venue_par, venue, season)
+        phase_par_from_target = (float(target) * self.target_balls / 120.0) if target is not None else 0.0
         row = {
             "threshold_X": float(threshold_X),
             "implied_open": float(implied_open),
@@ -95,6 +97,9 @@ class FullInningsModel:
             "x_minus_bat": float(threshold_X) - bat_prior,
             "x_minus_bowl": float(threshold_X) - bowl_prior,
             "innings": int(innings),
+            "target": float(target) if target is not None else 0.0,
+            "phase_par_from_target": phase_par_from_target,
+            "x_minus_target_par": float(threshold_X) - phase_par_from_target,
         }
         for L in self.leagues:
             row[f"is_{L}"] = 1.0 if league == L else 0.0
@@ -112,6 +117,8 @@ def load_models(model_dir: Path) -> dict[str, "FullInningsModel"]:
         ("phase_6", "6"),
         ("phase_10", "10"),
         ("phase_15", "15"),
+        ("phase_6_inn2", "6_inn2"),
+        ("phase_10_inn2", "10_inn2"),
     ]:
         if (model_dir / f"{prefix}_meta.json").exists():
             try:
@@ -122,13 +129,23 @@ def load_models(model_dir: Path) -> dict[str, "FullInningsModel"]:
 
 
 def model_for_market_name(market_name: str, registry: dict[str, "FullInningsModel"]) -> "FullInningsModel | None":
-    """Pick the right phase model for a given Betfair market name."""
+    """Pick the right phase model for a given Betfair market name.
+
+    Routes innings-2 6-over and 10-over markets to dedicated inn2 models
+    when available. Innings-2 phase_15 and full innings have too much
+    chase-end selection bias and stay on the inn1 models (which means in
+    practice we'll often skip those trades)."""
     if not market_name:
         return registry.get("full")
     name = market_name.lower()
+    is_inn2 = name.startswith("2nd") or name.startswith("second")
     if "6 over" in name or "6 overs" in name:
+        if is_inn2:
+            return registry.get("6_inn2") or registry.get("6") or registry.get("full")
         return registry.get("6") or registry.get("full")
     if "10 over" in name or "10 overs" in name:
+        if is_inn2:
+            return registry.get("10_inn2") or registry.get("10") or registry.get("full")
         return registry.get("10") or registry.get("full")
     if "15 over" in name or "15 overs" in name:
         return registry.get("15") or registry.get("full")
