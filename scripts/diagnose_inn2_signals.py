@@ -52,6 +52,39 @@ def main() -> int:
     active = active.assign(won=won, p_bucket=pd.cut(active["model_p"], bins=[0, .2, .35, .5, .65, .8, 1.0]))
     print(active.groupby(["phase", "p_bucket"], observed=True)["won"].agg(["mean", "size"]).to_string())
 
+    print("\n=== Confidence-band backtest (only take trades with |p-0.5| in band) ===")
+    LINE_ODDS = 2.00
+    for lo_edge, hi_edge in [(0.05, 0.20), (0.05, 0.30), (0.05, 0.40), (0.10, 0.30), (0.05, 1.0)]:
+        for phase in ["phase_6", "phase_10"]:
+            sub = active[active["phase"] == phase].copy()
+            conf = np.abs(sub["model_p"] - 0.5)
+            sub = sub[(conf >= lo_edge) & (conf <= hi_edge)]
+            if sub.empty:
+                print(f"  band [{lo_edge:.2f}, {hi_edge:.2f}] {phase}: 0 trades")
+                continue
+            won_sub = sub["won"].astype(int).to_numpy()
+            pnl = np.where(won_sub == 1, 100 * (LINE_ODDS - 1) * 0.95, -100.0)
+            roi = pnl.sum() / (len(sub) * 100)
+            print(f"  band [{lo_edge:.2f}, {hi_edge:.2f}] {phase}: n={len(sub):3d}  ROI={roi:+.2%}  win={won_sub.mean():.1%}")
+
+    print("\n=== Are wins concentrated in low-actual outcomes? ===")
+    for phase in ["phase_6", "phase_10"]:
+        sub = active[active["phase"] == phase]
+        if sub.empty: continue
+        print(f"  {phase}:")
+        print(f"    actual_total quantiles among wins:   "
+              f"25%={sub[sub['won']==1]['actual_total'].quantile(.25):.0f}  "
+              f"50%={sub[sub['won']==1]['actual_total'].quantile(.50):.0f}  "
+              f"75%={sub[sub['won']==1]['actual_total'].quantile(.75):.0f}")
+        print(f"    actual_total quantiles among losses: "
+              f"25%={sub[sub['won']==0]['actual_total'].quantile(.25):.0f}  "
+              f"50%={sub[sub['won']==0]['actual_total'].quantile(.50):.0f}  "
+              f"75%={sub[sub['won']==0]['actual_total'].quantile(.75):.0f}")
+        chase_end = sub["actual_total"] < sub["target"] + 0  # final inn2 below target = chase didn't finish OR was bowled out
+        all_out_or_blown_out = (sub["actual_total"] < 0.7 * sub["line_t_minus_1"])  # actual MUCH lower than line
+        print(f"    fraction of wins where actual < 70% of line: "
+              f"{(all_out_or_blown_out & (sub['won']==1)).sum() / max(1, (sub['won']==1).sum()):.1%}")
+
     # ----- GT v CSK 2026-05-21 lookup -----
     print("\n=== GT v CSK 2026-05-21 inn2 PP scenario (live skipped) ===")
     registry = load_models(Path("models"))
