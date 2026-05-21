@@ -50,9 +50,9 @@ LEAGUES = ["ipl", "bbl", "psl", "cpl", "ntb"]
 MAX_TRAIN_SEASON: int | None = 2023
 
 
-def inn2_phase_outcome(g: pd.DataFrame, target_balls: int) -> int | None:
-    """Return inn2 cumulative runs at end of phase, OR final inn2 total
-    if the chase ended before the phase boundary."""
+def inn2_phase_outcome(g: pd.DataFrame, target_balls: int, inn1_total: int) -> int | None:
+    """Return inn2 settled total for the phase Line market. None when the
+    market would have voided (innings rain-reduced below phase boundary)."""
     g = g.sort_values(["over", "ball", "is_legal_delivery"], ascending=[True, True, False]).reset_index(drop=True)
     legal_idx = np.where(g["is_legal_delivery"].values)[0]
     if len(legal_idx) == 0:
@@ -60,16 +60,20 @@ def inn2_phase_outcome(g: pd.DataFrame, target_balls: int) -> int | None:
     if len(legal_idx) >= target_balls:
         cut = legal_idx[target_balls - 1] + 1
         return int(g.iloc[:cut]["runs_total"].sum())
-    # Chase ended early -- final inn2 total is what the market settled on
-    return int(g["runs_total"].sum())
+    wickets = int(g["wicket"].fillna(False).astype(bool).sum())
+    final_total = int(g["runs_total"].sum())
+    if wickets >= 10 or final_total > inn1_total:
+        return final_total
+    return None  # rain-reduced -> market would void
 
 
 def build_inn2_data(balls: pd.DataFrame, target_balls: int) -> pd.DataFrame:
+    inn1_totals = balls[balls["innings"] == 1].groupby("match_id")["runs_total"].sum().astype(int).to_dict()
     rows = []
     for (mid, innings), g in balls.groupby(["match_id", "innings"]):
         if int(innings) != 2:
             continue
-        outcome = inn2_phase_outcome(g, target_balls)
+        outcome = inn2_phase_outcome(g, target_balls, inn1_totals.get(mid, 0))
         if outcome is None:
             continue
         tgt = g["target"].dropna()

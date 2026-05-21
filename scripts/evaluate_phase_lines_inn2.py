@@ -25,6 +25,13 @@ LINE_NAME_PATTERNS = [
     ("phase_10", 60, re.compile(r"^(2nd|second) +Innings +10 +Overs? +Line$", re.IGNORECASE)),
 ]
 
+# Plausible line bounds per phase. Lines outside this range are extraction
+# artefacts (wrong runner / stale price from a different market).
+LINE_BOUNDS = {
+    "phase_6":  (20, 130),
+    "phase_10": (40, 200),
+}
+
 
 def header_definition(bz2_bytes: bytes):
     head = bz2.BZ2Decompressor().decompress(bz2_bytes[:131072])
@@ -74,6 +81,13 @@ def line_at_or_before(hist, target_ms):
 
 
 def inn2_settlement(balls, mid, target_balls):
+    """Return settled inn2 total for the phase, or None if the market would void.
+    Voids when fewer overs were bowled than the phase's stipulated number AND
+    the innings ended for a reason other than bowled-out or chase-complete
+    (i.e. rain-reduced). Cricsheet flags neither directly, so we use:
+       - wickets == 10 -> all-out -> settle on final
+       - final total > inn1 total -> chase complete -> settle on final
+       - else (legal_balls < target_balls): treat as void."""
     inn = balls[(balls["match_id"] == mid) & (balls["innings"] == 2)]
     if inn.empty: return None
     inn = inn.sort_values(["over", "ball", "is_legal_delivery"], ascending=[True, True, False]).reset_index(drop=True)
@@ -81,7 +95,14 @@ def inn2_settlement(balls, mid, target_balls):
     if len(legal_idx) >= target_balls:
         cut = legal_idx[target_balls - 1] + 1
         return int(inn.iloc[:cut]["runs_total"].sum())
-    return int(inn["runs_total"].sum())
+    # innings ended before the phase boundary -- check why
+    wickets = int(inn["wicket"].fillna(False).astype(bool).sum())
+    final_total = int(inn["runs_total"].sum())
+    inn1 = balls[(balls["match_id"] == mid) & (balls["innings"] == 1)]
+    inn1_total = int(inn1["runs_total"].sum()) if not inn1.empty else 0
+    if wickets >= 10 or final_total > inn1_total:
+        return final_total  # all-out or chase complete -> market settles
+    return None  # rain-reduced -> market voids
 
 
 def inn1_total(balls, mid):
@@ -168,6 +189,9 @@ def main() -> int:
                 if tgt is None: continue
                 line_t1 = line_at_or_before(hist, inplay_start - 60_000)
                 if line_t1 is None: continue
+                lo, hi = LINE_BOUNDS[phase_label]
+                if not (lo <= line_t1 <= hi):
+                    continue  # extraction artefact
                 rows.append({
                     "phase": phase_label, "target_balls": target_balls,
                     "match_id": match_id, "league": league_by_match.get(str(match_id)),
