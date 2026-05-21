@@ -127,11 +127,12 @@ def evaluate_with_model(
     return signals, breakdown
 
 
-# Standard exchange decimal odds for Innings Runs Line markets. Betfair convention
-# is ~1.92 each side; we use this when explicit odds aren't extracted from the
-# screenshot. Confirmed against historical Line market data; sensitivity in
-# evaluate_line_combined.py showed ROI scales linearly with this assumption.
-LINE_DEFAULT_ODDS = 1.92
+# Standard exchange decimal odds for Innings Runs Line markets.
+# Confirmed on the live Betfair Exchange app: line markets quote at 2.0
+# (effective 50/50 implied probability). 5%% commission on winnings.
+# Sensitivity in evaluate_line_combined.py: at 2.0 vs 1.92, backtest ROI
+# is ~5pp higher (better payout per win, slightly bigger edge per signal).
+LINE_DEFAULT_ODDS = 2.00
 LINE_EDGE_THRESHOLD = 0.05   # 5pp edge above 1/odds required for a signal
 LINE_IMPLIED_AT_ODDS = 1.0 / LINE_DEFAULT_ODDS  # ~0.521
 
