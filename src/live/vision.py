@@ -26,11 +26,13 @@ TEXT_MODEL = "claude-haiku-4-5"
 
 @dataclass
 class RunnerExtraction:
-    threshold_X: int
+    threshold_X: int               # for ladder runners: the X in "X or more"
+                                   # for line runners: the line value, rounded
     back_price: float | None
     lay_price: float | None
     available_back_size: float | None = None
     available_lay_size: float | None = None
+    side: str | None = None        # 'under' / 'over' for line markets, None for ladders
 
 
 @dataclass
@@ -38,6 +40,7 @@ class MarketExtraction:
     teams: list[str]               # ["Mumbai Indians", "Kolkata Knight Riders"]
     innings: int | None            # 1 or 2 (None if not determinable)
     market_name: str | None        # "1st Innings Runs" / "2nd Innings Runs" / etc.
+    market_kind: str               # 'ladder' (multi-runner X-or-more) or 'line' (single line, Under/Over)
     venue: str | None
     runners: list[RunnerExtraction]
     confidence: str                # 'high' / 'medium' / 'low'
@@ -72,26 +75,47 @@ User caption: "{user_caption}"
 Prior session context (may be relevant for resolving ambiguity):
 {context_str}
 
+Cricket markets on Betfair come in two main formats for innings totals:
+
+  LADDER format: many rows of "X Runs or more" each with their own back/lay
+    decimal odds. Example market names: "1st Innings Runs", "2nd Innings
+    6 Overs Total". Treat as market_kind = "ladder".
+
+  LINE format: a single row labelled "Total Runs" with an Under value and
+    an Over value as line thresholds (e.g. "Under 59.5 / Over 60.5") and
+    £ liquidity amounts. Decimal odds are usually NOT shown (Betfair
+    convention: ~1.92 each side). Example market names: "1st Innings
+    Runs Line", "1st Innings 6 Overs Line". Treat as market_kind = "line".
+
 Please extract structured data:
 
 1. Match info:
    - teams: list of two team names exactly as Betfair displays them
    - innings: 1 or 2 (which innings the market is about). Infer from market name
      if visible, or the user caption, or prior context. Null if unclear.
-   - market_name: full market name as shown (e.g. "1st Innings Runs",
-     "2nd Innings 6 Overs Total"). Null if not visible.
+   - market_name: full market name as shown. Null if not visible.
+   - market_kind: "ladder" or "line" per the formats above.
    - venue: if visible or in caption, else null.
 
-2. Runners (the "X Runs or more" ladder, or "Under/Over" pair):
-   For EACH visible runner row, extract:
-   - threshold_X: integer (the X value in "X Runs or more"). If the runner is
-     an "Under" line, use the under threshold; if "Over", use over threshold.
-   - back_price: decimal odds shown on the BACK side (usually pink/blue cells
-     on the left). Float. Null if not visible.
-   - lay_price: decimal odds shown on the LAY side (usually pink/blue cells
-     on the right). Float. Null if not visible.
-   - available_back_size, available_lay_size: GBP amounts shown under the
-     prices (e.g. "£746", "£932"). Float, null if not visible.
+2. Runners:
+   For a LADDER market, one runner per "X Runs or more" row:
+     - threshold_X: integer (the X value)
+     - back_price: decimal odds on BACK side
+     - lay_price: decimal odds on LAY side
+     - available_back_size, available_lay_size: GBP liquidity if visible
+     - side: null
+
+   For a LINE market, TWO runners (one for each side):
+     - {{"threshold_X": <under line as int>, "back_price": null, "lay_price": null,
+        "available_back_size": <under £ if visible>, "available_lay_size": null,
+        "side": "under"}}
+     - {{"threshold_X": <over line as int>, "back_price": null, "lay_price": null,
+        "available_back_size": null, "available_lay_size": <over £ if visible>,
+        "side": "over"}}
+     Important: for LINE markets, the visible "59.5" / "60.5" values are line
+     THRESHOLDS not decimal odds. Decimal odds are typically ~1.92 and usually
+     not shown. Leave back_price / lay_price null if odds aren't explicitly
+     displayed elsewhere on the screen.
 
 3. Confidence: 'high' / 'medium' / 'low' overall.
 4. Notes: 1-2 lines describing anything you weren't sure about.
@@ -101,10 +125,12 @@ Respond with a single JSON object, no other text. Schema:
   "teams": ["str", "str"],
   "innings": 1 | 2 | null,
   "market_name": "str" | null,
+  "market_kind": "ladder" | "line",
   "venue": "str" | null,
   "runners": [
     {{"threshold_X": int, "back_price": float|null, "lay_price": float|null,
-      "available_back_size": float|null, "available_lay_size": float|null}}
+      "available_back_size": float|null, "available_lay_size": float|null,
+      "side": "under" | "over" | null}}
   ],
   "confidence": "high|medium|low",
   "notes": "str"
@@ -130,11 +156,20 @@ Respond with a single JSON object, no other text. Schema:
             if raw.startswith("json\n"):
                 raw = raw[5:]
         data = json.loads(raw)
-        runners = [RunnerExtraction(**r) for r in data.get("runners", [])]
+        # Tolerate runners with the new 'side' field or without it
+        runners = []
+        for r in data.get("runners", []):
+            r = dict(r)
+            r.setdefault("side", None)
+            runners.append(RunnerExtraction(**r))
+        market_kind = data.get("market_kind") or (
+            "line" if any(r.side in ("under", "over") for r in runners) else "ladder"
+        )
         return MarketExtraction(
             teams=list(data.get("teams") or []),
             innings=data.get("innings"),
             market_name=data.get("market_name"),
+            market_kind=str(market_kind),
             venue=data.get("venue"),
             runners=runners,
             confidence=str(data.get("confidence", "low")),

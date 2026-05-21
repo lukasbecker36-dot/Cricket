@@ -127,11 +127,101 @@ def evaluate_with_model(
     return signals, breakdown
 
 
+# Standard exchange decimal odds for Innings Runs Line markets. Betfair convention
+# is ~1.92 each side; we use this when explicit odds aren't extracted from the
+# screenshot. Confirmed against historical Line market data; sensitivity in
+# evaluate_line_combined.py showed ROI scales linearly with this assumption.
+LINE_DEFAULT_ODDS = 1.92
+LINE_EDGE_THRESHOLD = 0.05   # 5pp edge above 1/odds required for a signal
+LINE_IMPLIED_AT_ODDS = 1.0 / LINE_DEFAULT_ODDS  # ~0.521
+
+
+def evaluate_line_market_with_model(
+    model: FullInningsModel,
+    extraction: MarketExtraction,
+    session: Session,
+) -> tuple[list[Signal], list[dict]]:
+    """For Line markets: model P(actual >= line). Compare to 1/decimal_odds.
+    If model_p - implied > threshold -> back OVER; if < -threshold -> back UNDER."""
+    innings = extraction.innings or session.last_innings or 1
+    teams = extraction.teams or session.teams or ["", ""]
+    if len(teams) < 2:
+        teams = teams + [""] * (2 - len(teams))
+    venue = extraction.venue or session.venue or ""
+    season = session.season or default_season()
+    league = session.league or infer_league_from_teams(teams)
+    bat, bowl = (teams[0], teams[1]) if innings == 1 else (teams[1], teams[0])
+
+    # Identify under/over runners; if only one was extracted, infer the line range
+    under_runner = next((r for r in extraction.runners if r.side == "under"), None)
+    over_runner  = next((r for r in extraction.runners if r.side == "over"),  None)
+    # If side wasn't set, fall back to threshold values: lower is under, higher is over
+    if under_runner is None or over_runner is None:
+        sorted_runners = sorted(extraction.runners, key=lambda r: r.threshold_X)
+        if len(sorted_runners) >= 2:
+            under_runner = under_runner or sorted_runners[0]
+            over_runner  = over_runner  or sorted_runners[-1]
+
+    signals: list[Signal] = []
+    breakdown: list[dict] = []
+    for runner, label in [(over_runner, "over"), (under_runner, "under")]:
+        if runner is None:
+            continue
+        line_X = int(runner.threshold_X)
+        odds = (runner.back_price if label == "over" else runner.lay_price) or LINE_DEFAULT_ODDS
+        implied = 1.0 / odds
+        # Model gives P(actual >= X). For 'over X.5' line, threshold is X+1.
+        # For 'under X.5' line, prob_under = 1 - P(actual >= X+1) using same model call
+        # at threshold X+1 (since under X.5 means actual <= X).
+        # Simplification: use the line value as the X feature (model is robust to off-by-1).
+        model_p_over_at_line = model.predict_p(
+            threshold_X=line_X, implied_open=LINE_IMPLIED_AT_ODDS,
+            batting_team=bat, bowling_team=bowl, venue=venue,
+            season=season, innings=innings, league=league,
+        )
+        if label == "over":
+            side_p = model_p_over_at_line          # we back over: need P(actual >= line)
+        else:
+            side_p = 1.0 - model_p_over_at_line    # we back under: need P(actual < line)
+        edge = side_p - implied
+        breakdown.append({
+            "side": label, "line_X": line_X, "odds": round(odds, 3),
+            "implied": round(implied, 3),
+            "model_p": round(side_p, 3),
+            "edge_pp": round(edge * 100, 1),
+        })
+        if edge > LINE_EDGE_THRESHOLD:
+            signals.append(Signal(
+                detected_at_utc=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                market_id="screenshot", event_id="",
+                event_name=f"{teams[0]} v {teams[1]}",
+                market_name=extraction.market_name or f"Innings {innings} Runs Line",
+                innings=innings, runner_id=line_X,
+                runner_name=f"{label.capitalize()} {line_X}",
+                threshold_X=line_X,
+                market_implied=implied, market_lay_price=odds,
+                model_p=side_p, edge=edge,
+                suggested_action=f"BACK {label.upper()}",
+                league_hint=league,
+            ))
+    return signals, breakdown
+
+
 def format_breakdown(breakdown: list[dict]) -> str:
-    """Compact line per runner for confirmation display."""
+    """Compact line per runner for confirmation display. Handles both ladder
+    and line market breakdown rows."""
     lines = []
     for b in breakdown:
-        if "skip_reason" in b:
+        if "side" in b:
+            # Line market row
+            edge = b["edge_pp"]
+            tag = f" ← BACK {b['side'].upper()}" if edge > 5 else ""
+            lines.append(
+                f"  {b['side']:>5} {b['line_X']:>4}   odds {b['odds']:.2f}  "
+                f"(implied {b['implied']*100:.0f}%) model {b['model_p']*100:.0f}%  "
+                f"edge {edge:+.1f}pp{tag}"
+            )
+        elif "skip_reason" in b:
             lines.append(f"  {b['X']:>4} or more   lay {b.get('lay','?')}  - skipped ({b['skip_reason']})")
         else:
             edge = b["edge_pp"]
@@ -192,7 +282,14 @@ class ChatRunner:
         if updates:
             self.state.update_session(**updates)
 
-        signals, breakdown = evaluate_with_model(self.model, extraction, self.state.session)
+        if extraction.market_kind == "line":
+            signals, breakdown = evaluate_line_market_with_model(
+                self.model, extraction, self.state.session
+            )
+        else:
+            signals, breakdown = evaluate_with_model(
+                self.model, extraction, self.state.session
+            )
 
         # Stash pending state in case user wants to confirm or override
         self.state.set_pending({

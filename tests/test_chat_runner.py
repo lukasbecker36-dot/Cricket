@@ -67,6 +67,7 @@ def test_evaluate_with_model_runs_end_to_end(model: FullInningsModel):
         teams=["Mumbai Indians", "Kolkata Knight Riders"],
         innings=1,
         market_name="1st Innings Runs",
+        market_kind="ladder",
         venue="Wankhede Stadium, Mumbai",
         runners=[
             RunnerExtraction(threshold_X=150, back_price=2.10, lay_price=2.20),
@@ -92,7 +93,7 @@ def test_evaluate_with_model_runs_end_to_end(model: FullInningsModel):
 def test_evaluate_skips_when_no_lay_price(model: FullInningsModel):
     extraction = MarketExtraction(
         teams=["Mumbai Indians", "Kolkata Knight Riders"], innings=1,
-        market_name="1st Innings Runs", venue="V",
+        market_name="1st Innings Runs", market_kind="ladder", venue="V",
         runners=[RunnerExtraction(threshold_X=160, back_price=None, lay_price=None)],
         confidence="low", notes="",
     )
@@ -100,6 +101,49 @@ def test_evaluate_skips_when_no_lay_price(model: FullInningsModel):
     signals, breakdown = evaluate_with_model(model, extraction, session)
     assert signals == []
     assert breakdown[0].get("skip_reason") == "no lay price"
+
+
+def test_evaluate_line_market_produces_back_signal_or_skip(model: FullInningsModel):
+    """Line market with explicit Under/Over runners: pipeline should produce a
+    breakdown with both sides and (depending on model) optionally a BACK signal."""
+    from src.live.chat_runner import evaluate_line_market_with_model
+    extraction = MarketExtraction(
+        teams=["Mumbai Indians", "Kolkata Knight Riders"],
+        innings=1,
+        market_name="1st Innings Runs Line",
+        market_kind="line",
+        venue="Wankhede Stadium, Mumbai",
+        runners=[
+            RunnerExtraction(threshold_X=164, back_price=None, lay_price=None, side="under"),
+            RunnerExtraction(threshold_X=165, back_price=None, lay_price=None, side="over"),
+        ],
+        confidence="high", notes="",
+    )
+    session = Session(teams=extraction.teams, league="ipl",
+                      venue="Wankhede Stadium, Mumbai", season=2025, last_innings=1)
+    signals, breakdown = evaluate_line_market_with_model(model, extraction, session)
+    # Two breakdown rows, one per side
+    assert len(breakdown) == 2
+    sides = {b["side"] for b in breakdown}
+    assert sides == {"over", "under"}
+    # Edge sign is the model's call; we just verify signals (if any) have the right shape
+    for s in signals:
+        assert s.suggested_action.startswith("BACK ")
+        assert s.edge > 0
+
+
+def test_format_breakdown_handles_line_rows():
+    from src.live.chat_runner import format_breakdown as fb
+    rows = [
+        {"side": "over", "line_X": 165, "odds": 1.92, "implied": 0.521,
+         "model_p": 0.60, "edge_pp": 7.9},
+        {"side": "under", "line_X": 164, "odds": 1.92, "implied": 0.521,
+         "model_p": 0.40, "edge_pp": -12.1},
+    ]
+    out = fb(rows)
+    assert "over" in out
+    assert "under" in out
+    assert "BACK OVER" in out  # edge_pp 7.9 > 5 triggers tag
 
 
 def test_format_breakdown_handles_mixed_rows():
