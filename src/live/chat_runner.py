@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .chat_state import ChatStateStore, Session
 from .config import LiveConfig
-from .signals import FullInningsModel, Signal, format_signal
+from .signals import FullInningsModel, Signal, format_signal, load_models, model_for_market_name
 from .telegram import TelegramClient, extract_text_and_photo
 from .vision import MarketExtraction, RunnerExtraction, TextIntent, VisionClient, to_jsonable
 
@@ -235,7 +235,12 @@ class ChatRunner:
     def __init__(self, cfg: LiveConfig, anthropic_api_key: str | None = None):
         self.cfg = cfg
         self.telegram = TelegramClient(cfg.telegram_bot_token, cfg.telegram_chat_id)
-        self.model = FullInningsModel(cfg.model_dir)
+        self.models = load_models(cfg.model_dir)
+        if "full" not in self.models:
+            raise RuntimeError(f"No full_innings model found in {cfg.model_dir}")
+        # Backward compatibility: legacy code refers to self.model
+        self.model = self.models["full"]
+        logger.info("loaded models: %s", sorted(self.models.keys()))
         self.vision = VisionClient(api_key=anthropic_api_key)
         self.state = ChatStateStore(cfg.log_dir.parent / "chat_state.json")
         self.stop_requested = False
@@ -282,13 +287,15 @@ class ChatRunner:
         if updates:
             self.state.update_session(**updates)
 
+        # Pick the phase-appropriate model based on the extracted market name
+        chosen_model = model_for_market_name(extraction.market_name or "", self.models) or self.model
         if extraction.market_kind == "line":
             signals, breakdown = evaluate_line_market_with_model(
-                self.model, extraction, self.state.session
+                chosen_model, extraction, self.state.session
             )
         else:
             signals, breakdown = evaluate_with_model(
-                self.model, extraction, self.state.session
+                chosen_model, extraction, self.state.session
             )
 
         # Stash pending state in case user wants to confirm or override

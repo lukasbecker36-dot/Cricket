@@ -47,24 +47,34 @@ class Signal:
 
 
 class FullInningsModel:
-    """Loads the saved full_innings model and all its lookups."""
+    """Generic phase model loader. Defaults to the full_innings files but
+    accepts a label prefix to load phase_6 / phase_10 / phase_15 etc."""
 
-    def __init__(self, model_dir: Path):
-        with open(model_dir / "full_innings_meta.json") as f:
+    def __init__(self, model_dir: Path, prefix: str = "full_innings"):
+        self.prefix = prefix
+        with open(model_dir / f"{prefix}_meta.json") as f:
             self.meta = json.load(f)
         self.features: list[str] = self.meta["features"]
         self.edge_threshold: float = float(self.meta["edge_threshold"])
-        self.implied_min: float = float(self.meta["implied_min"])
-        self.implied_max: float = float(self.meta["implied_max"])
+        self.implied_min: float = float(self.meta.get("implied_min", 0.10))
+        self.implied_max: float = float(self.meta.get("implied_max", 0.90))
         self.leagues: list[str] = list(self.meta["leagues"])
         self.default_par: float = float(self.meta["default_par"])
-        self.booster = lgb.Booster(model_file=str(model_dir / "full_innings_gbm.lgb"))
-        with open(model_dir / "full_innings_bat_pp.json") as f:
-            self.bat_pp = json.load(f)
-        with open(model_dir / "full_innings_bowl_pp.json") as f:
-            self.bowl_pp = json.load(f)
-        with open(model_dir / "full_innings_venue_par.json") as f:
-            self.venue_par = json.load(f)
+        self.target_balls: int = int(self.meta.get("target_balls", 120))
+        self.booster = lgb.Booster(model_file=str(model_dir / f"{prefix}_gbm.lgb"))
+        # File names differ between the original (bat_pp/bowl_pp/venue_par) and
+        # the phase models (bat_prior/bowl_prior/venue_par). Try both.
+        for fname in (f"{prefix}_bat_pp.json", f"{prefix}_bat_prior.json"):
+            p = model_dir / fname
+            if p.exists():
+                self.bat_pp = json.loads(p.read_text())
+                break
+        for fname in (f"{prefix}_bowl_pp.json", f"{prefix}_bowl_prior.json"):
+            p = model_dir / fname
+            if p.exists():
+                self.bowl_pp = json.loads(p.read_text())
+                break
+        self.venue_par = json.loads((model_dir / f"{prefix}_venue_par.json").read_text())
 
     def _lookup(self, table: dict, team: str, season: int) -> float:
         return float(table.get(f"{team}|{season}", self.default_par))
@@ -88,8 +98,41 @@ class FullInningsModel:
         }
         for L in self.leagues:
             row[f"is_{L}"] = 1.0 if league == L else 0.0
-        x = np.array([[row[f] for f in self.features]], dtype=np.float32)
+        # Phase models don't include implied_open in their feature set; build
+        # the row vector strictly from self.features so missing keys aren't sent.
+        x = np.array([[row.get(f, 0.0) for f in self.features]], dtype=np.float32)
         return float(self.booster.predict(x)[0])
+
+
+def load_models(model_dir: Path) -> dict[str, "FullInningsModel"]:
+    """Load every available phase model. Returns dict keyed by short label."""
+    out: dict[str, FullInningsModel] = {}
+    for prefix, label in [
+        ("full_innings", "full"),
+        ("phase_6", "6"),
+        ("phase_10", "10"),
+        ("phase_15", "15"),
+    ]:
+        if (model_dir / f"{prefix}_meta.json").exists():
+            try:
+                out[label] = FullInningsModel(model_dir, prefix=prefix)
+            except Exception as e:  # missing companion files etc.
+                pass
+    return out
+
+
+def model_for_market_name(market_name: str, registry: dict[str, "FullInningsModel"]) -> "FullInningsModel | None":
+    """Pick the right phase model for a given Betfair market name."""
+    if not market_name:
+        return registry.get("full")
+    name = market_name.lower()
+    if "6 over" in name or "6 overs" in name:
+        return registry.get("6") or registry.get("full")
+    if "10 over" in name or "10 overs" in name:
+        return registry.get("10") or registry.get("full")
+    if "15 over" in name or "15 overs" in name:
+        return registry.get("15") or registry.get("full")
+    return registry.get("full")
 
 
 def parse_runner_threshold(name: str) -> int | None:
