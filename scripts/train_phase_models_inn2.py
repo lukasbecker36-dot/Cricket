@@ -44,6 +44,11 @@ PHASES = [
 
 LEAGUES = ["ipl", "bbl", "psl", "cpl", "ntb"]
 
+# Train cut-off: matches in seasons > MAX_TRAIN_SEASON are held out for OOS
+# validation. Set to None to train on everything (for production after
+# validation passes).
+MAX_TRAIN_SEASON: int | None = 2023
+
 
 def inn2_phase_outcome(g: pd.DataFrame, target_balls: int) -> int | None:
     """Return inn2 cumulative runs at end of phase, OR final inn2 total
@@ -101,13 +106,22 @@ def build_priors(df: pd.DataFrame) -> tuple[dict, dict, dict]:
 def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_step: int,
               balls: pd.DataFrame, league_by_match: dict, model_dir: Path) -> None:
     logger.info("=== training %s inn2 (target_balls=%d) ===", phase_label, target_balls)
-    df = build_inn2_data(balls, target_balls)
-    if df.empty:
+    df_all = build_inn2_data(balls, target_balls)
+    if df_all.empty:
         logger.warning("no inn2 data for %s; skipping", phase_label)
         return
-    logger.info("  inn2 matches: %d", len(df))
 
-    bat_pp, bowl_pp, ven_par = build_priors(df)
+    # Priors are computed from the full set but each season key uses only
+    # strictly-prior seasons, so this is leak-free even when later seasons
+    # are present. We need priors for the eval seasons too.
+    bat_pp, bowl_pp, ven_par = build_priors(df_all)
+
+    if MAX_TRAIN_SEASON is not None:
+        df = df_all[df_all["season"] <= MAX_TRAIN_SEASON].copy()
+        logger.info("  inn2 matches (train, season<=%d): %d / %d", MAX_TRAIN_SEASON, len(df), len(df_all))
+    else:
+        df = df_all
+        logger.info("  inn2 matches (train, all seasons): %d", len(df))
     default_par = float(np.mean(list(ven_par.values()))) if ven_par else 50.0
 
     rows = []
@@ -170,6 +184,7 @@ def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_ste
         "leagues": LEAGUES, "default_par": default_par,
         "trained_rows": int(len(x)), "best_iter": int(booster.best_iteration),
         "innings": 2,
+        "max_train_season": MAX_TRAIN_SEASON,
     }
     (model_dir / f"{phase_label}_inn2_meta.json").write_text(json.dumps(meta, indent=2))
     (model_dir / f"{phase_label}_inn2_bat_prior.json").write_text(json.dumps(bat_pp))

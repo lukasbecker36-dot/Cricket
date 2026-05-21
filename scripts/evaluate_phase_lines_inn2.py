@@ -219,7 +219,15 @@ def main() -> int:
                 "roi": float(pnl.sum() / (len(active) * 100)),
                 "win_rate": float(np.mean(won))}
 
+    # Honest validation: filter to seasons strictly after training cutoff.
+    max_train_season = registry["6_inn2"].meta.get("max_train_season")
+    if max_train_season is not None:
+        before = len(df)
+        df = df[df["season"] > int(max_train_season)].copy()
+        logger.info("OOS filter: kept %d / %d rows (season > %d)", len(df), before, max_train_season)
+
     print(f"\n===== INN2 phase Line backtest (LINE_ODDS={LINE_ODDS}, edge>={EDGE}) =====")
+    print(f"(model trained on seasons <= {max_train_season}; eval on > {max_train_season})")
     for phase in ["phase_6", "phase_10"]:
         sub = df[df["phase"] == phase]
         r = backtest(sub)
