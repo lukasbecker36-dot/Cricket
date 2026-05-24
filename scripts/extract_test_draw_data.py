@@ -261,8 +261,57 @@ def main() -> int:
     ).round(3).to_string())
 
     out = Path("data/processed/test_draws.parquet")
-    joined.to_parquet(out, index=False)
+    joined_to_save = joined.drop(columns=["teams_set"])
+    joined_to_save.to_parquet(out, index=False)
     logger.info("Saved: %s", out)
+
+    # 6. Naive lay-the-draw P&L simulation
+    print("\n=== Naive lay-the-draw P&L (lay every market, £10 stake, 5% commission) ===")
+    unique_for_pnl = joined.drop_duplicates("match_id_cricsheet").copy()
+    unique_for_pnl["lay_price"] = unique_for_pnl["draw_price_t60"]
+    unique_for_pnl["is_draw"] = (unique_for_pnl["outcome"] == "draw").astype(int)
+    unique_for_pnl["is_tie"] = (unique_for_pnl["outcome"] == "tie").astype(int)
+    unique_for_pnl["is_noresult"] = (unique_for_pnl["outcome"] == "no_result").astype(int)
+    STAKE = 10.0
+    COMMISSION = 0.05
+    # Lay payoff: win STAKE * (1 - commission) if NOT draw, else lose STAKE * (price - 1)
+    # For ties: in cricket Match Odds with The Draw, a tie typically goes to "The Draw" runner.
+    # Treat tie + draw together as "draw side wins"
+    draw_side_wins = (unique_for_pnl["is_draw"] | unique_for_pnl["is_tie"]).astype(bool)
+    unique_for_pnl["pnl"] = STAKE * (1 - COMMISSION)
+    unique_for_pnl.loc[draw_side_wins, "pnl"] = -STAKE * (unique_for_pnl["lay_price"] - 1)
+    unique_for_pnl.loc[unique_for_pnl["is_noresult"] == 1, "pnl"] = 0.0  # void
+
+    print(f"  n trades: {len(unique_for_pnl)}")
+    print(f"  n draws (lay losses): {draw_side_wins.sum()}")
+    print(f"  n results (lay wins): {(~draw_side_wins & (unique_for_pnl['is_noresult'] == 0)).sum()}")
+    print(f"  n void (no result): {unique_for_pnl['is_noresult'].sum()}")
+    print(f"  total P&L: £{unique_for_pnl['pnl'].sum():+.2f}")
+    print(f"  ROI on stake: {unique_for_pnl['pnl'].sum() / (len(unique_for_pnl) * STAKE):+.2%}")
+    avg_liability = (unique_for_pnl["lay_price"] - 1).mean() * STAKE
+    print(f"  avg liability per trade: £{avg_liability:.2f}")
+    print(f"  ROI on capital tied up: {unique_for_pnl['pnl'].sum() / (len(unique_for_pnl) * (avg_liability + STAKE)):+.2%}")
+
+    print("\n=== Year-by-year breakdown ===")
+    unique_for_pnl["year"] = unique_for_pnl["event_date"].str[:4]
+    yr = unique_for_pnl.groupby("year").agg(
+        n=("pnl", "size"),
+        draws=("is_draw", "sum"),
+        pnl=("pnl", "sum"),
+    ).round(2)
+    print(yr.to_string())
+
+    print("\n=== By market-implied draw bucket ===")
+    unique_for_pnl["draw_implied"] = 1.0 / unique_for_pnl["lay_price"]
+    unique_for_pnl["bucket"] = pd.qcut(unique_for_pnl["draw_implied"], q=5, duplicates="drop")
+    bt = unique_for_pnl.groupby("bucket", observed=True).agg(
+        n=("pnl", "size"),
+        market_prob=("draw_implied", "mean"),
+        actual_rate=("is_draw", "mean"),
+        pnl=("pnl", "sum"),
+    ).round(3)
+    bt["roi_on_stake"] = (bt["pnl"] / (bt["n"] * STAKE)).round(3)
+    print(bt.to_string())
     return 0
 
 
