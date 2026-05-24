@@ -8,8 +8,9 @@ covers **where we are**, **what we tried**, and **what to do next**.
 
 ## TL;DR
 
-- We're trading **Innings Runs Line markets** on Betfair Exchange — single Over/Under markets at ~2.0 odds with real liquidity. Backtest shows real edge.
-- Live workflow is a **screenshot-driven Telegram bot** (no Betfair API). User screenshots a market, Claude vision extracts it, model scores it, bot replies with the signal.
+- **Strategy A (T20 phase Lines)**: trading 6/10/15/20-over Innings Runs Line markets on Betfair Exchange. Live since May 2026, mixed results (-£0.50 over 4 trades). Mid-confidence band only.
+- **Strategy B (test cricket lay-the-draw)**: validated on 137 historical Betfair test Match Odds markets (2022-2026). **Market overestimates draws by ~8pp** in the post-Bazball era. Naive strategy returns +50% ROI on stake / +5.5% on capital; filtered to implied ≥15% returns **+11.7% ROI on capital**. Not live yet; waiting for ENG-NZ series.
+- **Live workflow**: screenshot-driven Telegram bot (no Betfair API). User screenshots a market, Claude vision extracts it, model scores it, bot replies with the signal.
 - Models cover 6/10/15-over phase Lines for innings 1 (trained on all leagues), and 6/10-over for innings 2 (target-aware). Innings 2 full-innings has too much chase-end selection bias to be useful.
 - **Lesson from live trading**: extreme-confidence signals (`|p − 0.5| > 0.30`) are unreliable. Mid-confidence band `[0.05, 0.30]` is where the real edge lives. See "Live P&L log" below.
 - **Open question**: whether to bypass the Hetzner→Betfair IP block (if it is one) to automate price ingestion instead of screenshots. Diagnostic script ready (`scripts/diagnose_betfair_access.py`).
@@ -165,6 +166,57 @@ band [0.05, 0.30] phase_10: n=8   ROI=+22%  win=63%
 ```
 
 This is what real edge looks like and matches the live trading outcomes so far.
+
+## Strategy B — Test cricket lay-the-draw
+
+**Status**: validated on historical data, NOT yet traded live. First live attempts will be the ENG vs NZ 3-test series.
+
+### The structural finding
+
+Across 137 tests with Betfair Match Odds data (2022-2026):
+
+| Market implied draw % | Actual draw rate | n |
+|---|---|---|
+| 5% | 0% | 28 |
+| 10% | 4% | 27 |
+| 15% | 7% | 27 |
+| 23% | 20% | 30 |
+| 40% | 20% | 25 |
+| **Overall: 18%** | **10%** | **137** |
+
+The market systematically overestimates test draw probability by ~8pp in the post-Bazball era. Naive "lay every draw at T-60s" returned +£695 P&L (+50.7% ROI on stake) across the 137 tests; capped-liability + filter to implied ≥15% returned +£280 P&L at +11.7% ROI on capital with max £75 drawdown.
+
+### v1 trading rule (ENG vs NZ)
+
+```
+For each test, ~60 min before scheduled start:
+- Check Betfair Match Odds market for "The Draw" runner
+- If implied draw probability ≥ 15% (lay price ≤ 6.7): LAY
+- Stake = £25 / (lay_price - 1), capped at £50 max
+- Cap liability at £25 per trade
+- If implied < 15%: SKIP
+```
+
+### Code
+
+- `scripts/phase0_lay_the_draw.py` — Cricsheet outcome distribution + oddspapi probe
+- `scripts/extract_test_draw_data.py` — pulls T-60s pre-inplay draw prices from `data/raw/betfair/betfair_all_markets.dat`, joins with Cricsheet outcomes. Output: `data/processed/test_draws.parquet`
+- `scripts/simulate_lay_the_draw.py` — strategy comparison + sizing calculator
+- `docs/LAY_THE_DRAW_SCOPE.md` — full scope document with phase plan
+
+### Why no model (v1)
+
+- Naive "implied ≥15%" filter already captures most of the structural edge
+- Only 14 draws across 137 trades — training data too thin for a meaningful binary classifier
+- ENG-NZ is just 3 trades; better to validate the strategy live first
+- Build a model later (Strategy B v2) when we have 200+ test trades to learn from
+
+### Pending for Strategy B
+
+1. **Forward-validate on ENG-NZ** (3 tests). Paper-trade if uncertain about live execution.
+2. **Confirm Betfair Match Odds settlement on rain-abandoned tests** — likely "The Draw" wins, making rain a real risk. Skip matches with bad forecasts.
+3. **Persistent paper-trade log** — capture lay price, stake, liability, outcome
+4. **Consider a model in v2** after 200+ live tests have accumulated
 
 ## Live P&L log
 
