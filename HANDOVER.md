@@ -34,12 +34,30 @@ phase_15 weather   +37.2%    +21.9%  ✓ weather helps
 - The edge IS real, but our model points the wrong way: its priors are backward-looking averages that lag the rising trend, so it bets UNDER and loses.
 - **Fix found** (`scripts/trend_aware_phase6.py`): adding a `league_trend` feature (league's PP avg in the prior season) recovers phase_6 from +9.5%/-7.3% to **+14.9%/-0.2%** OOS. The trend feature is what matters; recency-weighting alone doesn't help.
 
-**Current trading stance (after trend fix deployed across all phases):**
-- **phase_15**: trade it, anomaly-weather model deployed. Robust OOS edge (+22% mid-band).
-- **phase_6**: trend-aware model deployed. Recovered to +14.9% full / -0.2% mid OOS. Marginal but no longer losing.
-- **phase_10**: trend-aware model deployed. Recovered from -20.6% to +2.5% mid / +16.7% full OOS. Revived.
-- **full_innings (20-over)**: trend-aware model deployed. Par for the Hampshire test moved 141 → 175 (market was 187, actual 200 — old model would have lost badly backing under).
-- **The earlier "+24-44% ROI" headline numbers were in-sample inflated.** Honest OOS numbers are roughly half that. All four phase models now corrected for scoring-inflation lag.
+**Consolidated OOS backtest at £5 stake (train ≤2024, eval 2025+, full signal set), `scripts/oos_backtest_production.py`:**
+
+```
+phase           n    P&L    ROI     win   trust
+─────────────────────────────────────────────────
+full_innings    73  +£162  +44.2%   74%   🟢 strong (trend-fixed)
+phase_15       113  +£196  +34.6%   69%   🟢 robust (anomaly-weather)
+phase_10       153  +£112  +14.7%   59%   🟡 decent
+phase_6        235  +£132  +11.2%   57%   🟡 full-set only (mid-band NEGATIVE)
+phase_6_inn2    57  +£183  +64.2%   84%   🔴 inflated by chase-end artifact
+phase_10_inn2   45  +£184  +82.0%   93%   🔴 inflated by chase-end artifact
+─────────────────────────────────────────────────
+TOTAL               +£968
+inn1-only (4 mkts)  +£602 over 574 trades = +21% ROI  ← honest deployable number
+```
+
+**TRADING STANCE (corrected):**
+1. **Trade the FULL signal set, not the mid-band.** The earlier "mid-band [0.05,0.30] only" advice was WRONG — mid-band overall is barely positive (+£41) and phase_6 mid-band loses (−6%). Profit lives in the full set including high-confidence signals.
+2. **Lead with full_innings (20-over) and phase_15** — the two strongest, most trustworthy edges.
+3. **phase_10 decent, phase_6 full-set-only** (weakest, mid-band negative).
+4. **inn2 ROI (64%/82%) is inflated** by the chase-end settlement asymmetry (market settles on final total when chase ends early). Real edge is lower; trade small/sceptically.
+5. Caveats: LTP-based (no slippage beyond 5% commission), 2.0 odds assumed — real fills shave ROI.
+
+**All models corrected for scoring-inflation lag (the biggest hidden flaw).** full_innings was the worst case: par for the Hampshire test moved 141 → 175 after the fix (market 187, actual 200 — old model would have lost badly backing under). The earlier "+24-44% ROI" full-sample headlines were in-sample inflated; the £5 OOS table above is the honest read.
 
 **The scoring-inflation lag was the single biggest hidden problem.** Every phase model used backward-looking equal-weight priors that systematically underestimated the modern game. The fix (recency-weighted priors + a `league_trend` feature = the league's prior-season average) is deployed everywhere. Re-apply it to any new model.
 
