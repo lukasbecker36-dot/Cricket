@@ -1,6 +1,6 @@
 # Project handover — IPL/T20 win-probability trading
 
-Last updated: 2026-05-24
+Last updated: 2026-05-26
 
 This is a working handover for picking up the project mid-stream. Read CLAUDE.md
 first for the architectural principles — they're non-negotiable. This document
@@ -8,12 +8,37 @@ covers **where we are**, **what we tried**, and **what to do next**.
 
 ## TL;DR
 
-- **Strategy A (T20 phase Lines)**: trading 6/10/15/20-over Innings Runs Line markets on Betfair Exchange. Live since May 2026, mixed results (-£0.50 over 4 trades). Mid-confidence band only.
-- **Strategy B (test cricket lay-the-draw)**: validated on 137 historical Betfair test Match Odds markets (2022-2026). **Market overestimates draws by ~8pp** in the post-Bazball era. Naive strategy returns +50% ROI on stake / +5.5% on capital; filtered to implied ≥15% returns **+11.7% ROI on capital**. Not live yet; waiting for ENG-NZ series.
+- **Strategy A (T20 phase Lines)**: trading 6/10/15/20-over Innings Runs Line markets. **Strict OOS validation (2025+) changed our view — see "OOS reckoning" below.** Only **phase_15 has robust OOS edge**; phase_6 needs a trend-aware prior fix; phase_10 is weak.
+- **Strategy B (test cricket lay-the-draw)**: validated on 137 historical Betfair test Match Odds markets (2022-2026). **Market overestimates draws by ~8pp** in the post-Bazball era. Naive returns +50% ROI on stake / +5.5% on capital; filtered to implied ≥15% returns **+11.7% ROI on capital**. Not live yet; waiting for ENG-NZ series. **This is the most robust strategy we have.**
+- **Weather features**: added via Open-Meteo (`src/live/weather.py`). Help phase_15 (+7.7pp mid-band OOS), neutral/negative elsewhere. Powerplay is unaffected by weather (field restrictions dominate).
 - **Live workflow**: screenshot-driven Telegram bot (no Betfair API). User screenshots a market, Claude vision extracts it, model scores it, bot replies with the signal.
-- Models cover 6/10/15-over phase Lines for innings 1 (trained on all leagues), and 6/10-over for innings 2 (target-aware). Innings 2 full-innings has too much chase-end selection bias to be useful.
-- **Lesson from live trading**: extreme-confidence signals (`|p − 0.5| > 0.30`) are unreliable. Mid-confidence band `[0.05, 0.30]` is where the real edge lives. See "Live P&L log" below.
+- **Lesson from live trading**: extreme-confidence signals (`|p − 0.5| > 0.30`) are unreliable. But ALSO — see OOS reckoning: even the mid-band edge for phase_6/10 didn't survive strict OOS until we added trend awareness.
 - **Open question**: whether to bypass the Hetzner→Betfair IP block (if it is one) to automate price ingestion instead of screenshots. Diagnostic script ready (`scripts/diagnose_betfair_access.py`).
+
+## OOS reckoning (2026-05-26) — READ THIS
+
+We ran a strict walk-forward check: train phase models on seasons ≤2024, test on 2025+ Line markets (truly unseen). This **overturned earlier conclusions** that were based on full-sample backtests inflated by in-sample fit.
+
+```
+                  full ROI   mid-band ROI   (2025+ OOS, trained ≤2024)
+─────────────────────────────────────────────────
+phase_6  baseline  +9.5%     -7.3%   ⚠ mid-band LOSES
+phase_10 baseline  +12.5%    -5.6%   ⚠ mid-band LOSES
+phase_15 baseline  +32.7%    +14.2%  ✓ robust
+phase_15 weather   +37.2%    +21.9%  ✓ weather helps
+```
+
+**Why phase_6/10 decayed** (investigated, see `scripts/investigate_phase_decay.py`):
+- Powerplay scoring is inflating fast: PP avg went 45.5 (2020) → 53.1 (2025) → 56.8 (2026)
+- The market sets PP lines too LOW — in 2025 the actual goes OVER 62% of the time. Naively backing OVER every PP market in 2025 returns +20% ROI.
+- The edge IS real, but our model points the wrong way: its priors are backward-looking averages that lag the rising trend, so it bets UNDER and loses.
+- **Fix found** (`scripts/trend_aware_phase6.py`): adding a `league_trend` feature (league's PP avg in the prior season) recovers phase_6 from +9.5%/-7.3% to **+14.9%/-0.2%** OOS. The trend feature is what matters; recency-weighting alone doesn't help.
+
+**Current trading stance:**
+- **phase_15**: trade it, adopt the weather model. Robust OOS edge.
+- **phase_6**: needs the trend-aware prior deployed before trading (validated but not yet wired into live scoring). Then marginal/positive.
+- **phase_10**: park it — no clean inefficiency, weak OOS. Test the trend feature here too before reviving.
+- **The earlier "+24-44% ROI" headline numbers were in-sample inflated.** Honest OOS numbers are roughly half that.
 
 ## Project evolution (what we tried, what worked)
 
@@ -229,13 +254,15 @@ Real and paper trades made via the screenshot bot:
 | GT v CSK inn2 6-over | UNDER | (skipped) | would-win | model gave +33pp on inn1 model — correctly skipped because inn1 model has no target awareness |
 | SRH v RCB inn2 6-over | UNDER @66.5 | £5 (live) | LOST -£5.00 | extreme-confidence (30pp edge), wrong direction |
 | Glam v Glouc 20-over | UNDER @171.5 | £5 (paper) | WON +£4.75 | mid-confidence (7pp edge), as backtest predicted |
+| Hampshire v Essex 6-over | UNDER @55.5 | £5 (live) | WON +£4.75 | hot/dry conditions argued OVER; model UNDER right (51/2). Market over-corrected for weather. |
 
-Running: **-£0.50 over 4 settled trades.**
+Running: **+£4.25 over 5 settled trades.**
 
-**Strong observed pattern**: extreme-confidence signals (|p − 0.5| > 0.25 or
-edge > 25pp) have all lost so far. Mid-confidence signals (edge 5–10pp) have
-won. Sample size of 4 is meaningless statistically, but the direction is
-consistent with the diagnostic-finding above.
+**Caution on the "extreme-confidence loses" pattern**: it held for the first 4
+trades but Hampshire (an extreme +32pp signal) won. With 5 trades the live
+sample is statistically meaningless. Trust the OOS backtest (180+ trades) over
+the live sample: the honest signal is that phase_6/10 mid-band had no robust
+edge until the trend-feature fix, and phase_15 is the reliable phase.
 
 ## Known pitfalls / lessons
 
@@ -281,17 +308,53 @@ consistent with the diagnostic-finding above.
 
 ### Immediate
 
-1. **Wire confidence-band + line-plausibility filters into `chat_runner.py`**
-   so the live bot stops emitting extreme-confidence signals. Spec:
-   - `0.05 ≤ |p − 0.5| ≤ 0.30` → emit
+1. **Deploy the trend-aware phase_6 model.** Validated in `scripts/trend_aware_phase6.py`
+   (recency+trend recovers OOS from +9.5%/-7.3% to +14.9%/-0.2%). To ship:
+   - Add `league_trend` + `x_minus_trend` features to `FullInningsModel.predict_p`
+     in `src/live/signals.py` (needs the league's prior-season PP/phase average
+     saved alongside the model)
+   - Retrain production phase_6 with recency-weighted priors + trend feature
+   - Re-run OOS to confirm before live use
+
+2. **Test the trend feature on phase_10.** Same scoring-inflation lag likely
+   applies. If it recovers phase_10 the way it did phase_6, revive phase_10.
+
+3. **Adopt the weather model for phase_15.** Validated +7.7pp OOS in mid-band.
+   `scripts/train_phase_models_with_weather.py` produces `phase_15_wx_*`. Needs
+   weather features added to `FullInningsModel.predict_p` and live weather
+   lookup (already built in `src/live/weather.py`) wired into `chat_runner.py`.
+
+4. **Wire confidence-band + line-plausibility filters into `chat_runner.py`**
+   so the live bot stops emitting untrustworthy signals. Spec:
+   - `0.05 ≤ |p − 0.5| ≤ 0.30` → emit (but note: even mid-band only robust for phase_15)
    - PP line outside [25, 130] → skip
    - 10-over line outside [50, 175] → skip
    - 15-over line outside [80, 250] → skip
    - Full innings line outside [120, 280] → skip
 
-2. **Run `scripts/diagnose_betfair_access.py` on Hetzner** to confirm whether
+5. **Add weather context to every signal** regardless of model — the live bot
+   should show conditions so the human can apply judgement (the Hampshire trade
+   showed the market can over-correct for weather; human eyes catch this).
+
+6. **Run `scripts/diagnose_betfair_access.py` on Hetzner** to confirm whether
    the 403 was IP-block or just an expired session token. If reachable, build
    a streaming Betfair client and ditch the screenshot path.
+
+### Weather pipeline (built 2026-05-26)
+
+- `src/live/weather.py` — Open-Meteo geocoding + lookup, ~50 curated venue coords
+- `scripts/backfill_weather.py` — historical weather for training data → `data/processed/match_weather.parquet` (2,902 rows, 95/166 venues, 75% match coverage)
+- `scripts/train_phase_models_with_weather.py` — trains `phase_{N}_wx` models
+- `scripts/compare_phase_models_with_without_weather.py` — v1-vs-v2 backtest
+- `scripts/oos_weather_check.py` — strict 2025+ OOS isolating weather contribution
+- **71 venues failed geocoding** (minor English county grounds). Add their coords
+  to `VENUE_OVERRIDES` to lift coverage 75% → ~95%.
+
+### Decay investigation (built 2026-05-26)
+
+- `scripts/investigate_phase_decay.py` — year-by-year market sharpness, model
+  accuracy, scoring-distribution shift, league mix. This is what diagnosed the
+  scoring-inflation lag. Re-run it periodically to monitor for new decay.
 
 ### Medium-term
 
