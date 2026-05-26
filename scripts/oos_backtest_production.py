@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from src.ingestion.storage import read_balls
+from src.ingestion.teams import canonical_team
 from src.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,10 @@ def phase_total(g, tb):
     g = g.sort_values(["over", "ball", "is_legal_delivery"], ascending=[True, True, False]).reset_index(drop=True)
     li = np.where(g["is_legal_delivery"].values)[0]
     if tb >= 120:
-        return int(g["runs_total"].sum()) if len(li) >= 30 else None
+        wk = int(g["wicket"].fillna(False).astype(bool).sum())
+        if len(li) >= 118 or wk >= 10:
+            return int(g["runs_total"].sum())
+        return None
     if len(li) < tb:
         return None
     return int(g.iloc[:li[tb-1]+1]["runs_total"].sum())
@@ -59,8 +63,8 @@ def collect_phase_df(balls, tb):
         if t is None:
             continue
         rows.append({"match_id": mid, "season": int(g["season"].iloc[0]),
-                     "batting_team": g["batting_team"].iloc[0],
-                     "bowling_team": g["bowling_team"].iloc[0],
+                     "batting_team": canonical_team(g["batting_team"].iloc[0]),
+                     "bowling_team": canonical_team(g["bowling_team"].iloc[0]),
                      "venue": g["venue"].iloc[0], "total": t})
     return pd.DataFrame(rows)
 
@@ -198,8 +202,9 @@ def main() -> int:
 
         def score(rr):
             s = int(rr["season"])
-            bp = bat.get(f"{rr['batting_team']}|{s}", default_par)
-            wp = bowl.get(f"{rr['bowling_team']}|{s}", default_par)
+            bt_, bw_ = canonical_team(rr['batting_team']), canonical_team(rr['bowling_team'])
+            bp = bat.get(f"{bt_}|{s}", default_par)
+            wp = bowl.get(f"{bw_}|{s}", default_par)
             vp = ven.get(f"{rr['venue']}|{s}", default_par)
             X = int(round(rr["line_t_minus_1"]))
             d = {"threshold_X": float(X), "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,
@@ -255,7 +260,7 @@ def main() -> int:
             if tgt.empty:
                 continue
             rows_d.append({"match_id": mid, "season": int(g["season"].iloc[0]),
-                           "batting_team": g["batting_team"].iloc[0], "bowling_team": g["bowling_team"].iloc[0],
+                           "batting_team": canonical_team(g["batting_team"].iloc[0]), "bowling_team": canonical_team(g["bowling_team"].iloc[0]),
                            "venue": g["venue"].iloc[0], "target": float(tgt.iloc[0]), "phase_total": out})
         dd = pd.DataFrame(rows_d)
         bat, bowl, ven, trend = {}, {}, {}, {}
@@ -299,7 +304,8 @@ def main() -> int:
 
         def score2(rr):
             s = int(rr["season"])
-            bp = bat.get(f"{rr['batting_team']}|{s}", default_par); wp = bowl.get(f"{rr['bowling_team']}|{s}", default_par)
+            bt_, bw_ = canonical_team(rr['batting_team']), canonical_team(rr['bowling_team'])
+            bp = bat.get(f"{bt_}|{s}", default_par); wp = bowl.get(f"{bw_}|{s}", default_par)
             vp = ven.get(f"{rr['venue']}|{s}", default_par); lt = trend.get(str(s), default_par)
             X = int(round(rr["line_t_minus_1"])); ppt = float(rr["target"]) * tb / 120.0
             d = {"threshold_X": float(X), "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,

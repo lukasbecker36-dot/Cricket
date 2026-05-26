@@ -92,7 +92,8 @@ class FullInningsModel:
             self.venue_climo, self.global_climo = {}, {}
 
     def _lookup(self, table: dict, team: str, season: int) -> float:
-        return float(table.get(f"{team}|{season}", self.default_par))
+        from src.ingestion.teams import canonical_team
+        return float(table.get(f"{canonical_team(team)}|{season}", self.default_par))
 
     def predict_p(self, *, threshold_X: int, implied_open: float,
                   batting_team: str, bowling_team: str, venue: str,

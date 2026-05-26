@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from src.ingestion.storage import read_balls
+from src.ingestion.teams import canonical_team
 from src.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -32,8 +33,14 @@ def phase_total(g, tb):
     g = g.sort_values(["over", "ball", "is_legal_delivery"], ascending=[True, True, False]).reset_index(drop=True)
     li = np.where(g["is_legal_delivery"].values)[0]
     if tb >= 120:
-        # whole innings: count the full total even if all out before 120 balls
-        return int(g["runs_total"].sum()) if len(li) >= 30 else None
+        # Whole innings: only count COMPLETE innings — ~full 20 overs (>=118
+        # legal balls) OR all out. Rain-reduced innings (e.g. 15 overs) would
+        # otherwise be mislabelled as low full-innings totals, dragging the
+        # priors/labels down (worst in rain-prone NTB/BBL).
+        wk = int(g["wicket"].fillna(False).astype(bool).sum())
+        if len(li) >= 118 or wk >= 10:
+            return int(g["runs_total"].sum())
+        return None
     if len(li) < tb:
         return None
     return int(g.iloc[:li[tb-1]+1]["runs_total"].sum())
@@ -48,8 +55,8 @@ def collect_phase_df(balls, tb):
         if t is None:
             continue
         rows.append({"match_id": mid, "season": int(g["season"].iloc[0]),
-                     "batting_team": g["batting_team"].iloc[0],
-                     "bowling_team": g["bowling_team"].iloc[0],
+                     "batting_team": canonical_team(g["batting_team"].iloc[0]),
+                     "bowling_team": canonical_team(g["bowling_team"].iloc[0]),
                      "venue": g["venue"].iloc[0], "total": t})
     return pd.DataFrame(rows)
 

@@ -32,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from src.ingestion.storage import read_balls
+from src.ingestion.teams import canonical_team
 from src.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -82,8 +83,8 @@ def build_inn2_data(balls: pd.DataFrame, target_balls: int) -> pd.DataFrame:
         rows.append({
             "match_id": mid,
             "season": int(g["season"].iloc[0]),
-            "batting_team": g["batting_team"].iloc[0],
-            "bowling_team": g["bowling_team"].iloc[0],
+            "batting_team": canonical_team(g["batting_team"].iloc[0]),
+            "bowling_team": canonical_team(g["bowling_team"].iloc[0]),
             "venue": g["venue"].iloc[0],
             "target": float(tgt.iloc[0]),
             "phase_total": outcome,
