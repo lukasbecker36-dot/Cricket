@@ -68,13 +68,17 @@ def train_booster(train_df, features):
     return booster, len(x)
 
 
-def deploy_phase6_trend(balls, league_by_match, model_dir):
-    logger.info("=== phase_6: recency priors + league_trend ===")
-    tb, x_min, x_max, x_step = 36, 20, 110, 5
+ANOM_RAW = {"temp_anom": "temp_c", "humid_anom": "humidity_pct",
+            "wind_anom": "wind_kph", "cloud_anom": "cloud_pct"}
+ANOM_FEATURES = ["temp_anom", "humid_anom", "wind_anom", "precip_mm", "cloud_anom"]
+
+
+def deploy_phase_trend(phase_label, tb, x_min, x_max, x_step, balls, league_by_match, model_dir):
+    """Generic recency-priors + league_trend deploy for a phase (phase_6/phase_10)."""
+    logger.info("=== %s: recency priors + league_trend ===", phase_label)
     pp = collect_phase_df(balls, tb)
     default_par = float(pp["total"].mean())
 
-    # Recency-weighted priors + global league trend, keyed by season
     bat, bowl, ven, trend = {}, {}, {}, {}
     for s in sorted(pp["season"].unique()):
         prior = pp[pp["season"] < s]
@@ -112,23 +116,18 @@ def deploy_phase6_trend(balls, league_by_match, model_dir):
                 "league_trend", "x_minus_trend"] + [f"is_{L}" for L in LEAGUES]
     booster, n = train_booster(train_df, features)
 
-    booster.save_model(str(model_dir / "phase_6_gbm.lgb"))
+    booster.save_model(str(model_dir / f"{phase_label}_gbm.lgb"))
     meta = {"features": features, "target_balls": tb, "x_range": [x_min, x_max, x_step],
             "edge_threshold": 0.05, "implied_min": 0.10, "implied_max": 0.90,
             "leagues": LEAGUES, "default_par": default_par, "trained_rows": int(n),
             "best_iter": int(booster.best_iteration),
             "prior_mode": "recency_halflife2", "has_trend": True}
-    (model_dir / "phase_6_meta.json").write_text(json.dumps(meta, indent=2))
-    (model_dir / "phase_6_bat_prior.json").write_text(json.dumps(bat))
-    (model_dir / "phase_6_bowl_prior.json").write_text(json.dumps(bowl))
-    (model_dir / "phase_6_venue_par.json").write_text(json.dumps(ven))
-    (model_dir / "phase_6_league_trend.json").write_text(json.dumps(trend))
-    logger.info("  saved phase_6 (trend) best_iter=%d rows=%d", booster.best_iteration, n)
-
-
-ANOM_RAW = {"temp_anom": "temp_c", "humid_anom": "humidity_pct",
-            "wind_anom": "wind_kph", "cloud_anom": "cloud_pct"}
-ANOM_FEATURES = ["temp_anom", "humid_anom", "wind_anom", "precip_mm", "cloud_anom"]
+    (model_dir / f"{phase_label}_meta.json").write_text(json.dumps(meta, indent=2))
+    (model_dir / f"{phase_label}_bat_prior.json").write_text(json.dumps(bat))
+    (model_dir / f"{phase_label}_bowl_prior.json").write_text(json.dumps(bowl))
+    (model_dir / f"{phase_label}_venue_par.json").write_text(json.dumps(ven))
+    (model_dir / f"{phase_label}_league_trend.json").write_text(json.dumps(trend))
+    logger.info("  saved %s (trend) best_iter=%d rows=%d", phase_label, booster.best_iteration, n)
 
 
 def deploy_full_innings_trend(balls, league_by_match, model_dir):
@@ -282,7 +281,8 @@ def main() -> int:
     weather = pd.read_parquet("data/processed/match_weather.parquet")
 
     model_dir = Path("models")
-    deploy_phase6_trend(balls, league_by_match, model_dir)
+    deploy_phase_trend("phase_6", 36, 20, 110, 5, balls, league_by_match, model_dir)
+    deploy_phase_trend("phase_10", 60, 40, 175, 5, balls, league_by_match, model_dir)
     deploy_full_innings_trend(balls, league_by_match, model_dir)
     deploy_phase15_weather(balls, league_by_match, match_dates, weather, model_dir)
     return 0
