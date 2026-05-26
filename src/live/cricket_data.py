@@ -6,7 +6,7 @@ Confirmed endpoints (envelope is always {"status": "...", "response": ...}):
   GET /cricket-livescores
   GET /cricket-match-info?matchid=<id>
   GET /cricket-series                       (series list)
-  GET /cricket-scorecard?matchid=<id>       (NEEDS CONFIRMATION — see note)
+  GET /cricket-match-scoreboard?matchid=<id> (scoreboard; schema VERIFY)
 
 Auth headers: x-rapidapi-key, x-rapidapi-host. Key from RAPIDAPI_KEY env.
 
@@ -86,9 +86,8 @@ class CricketDataClient:
     def match_info_raw(self, match_id: str) -> dict:
         return self._get("cricket-match-info", matchid=match_id).get("response", {}) or {}
 
-    def scorecard_raw(self, match_id: str) -> dict:
-        # VERIFY endpoint name on RapidAPI; common variants below.
-        return self._get("cricket-scorecard", matchid=match_id).get("response", {}) or {}
+    def scoreboard_raw(self, match_id: str) -> dict:
+        return self._get("cricket-match-scoreboard", matchid=match_id).get("response", {}) or {}
 
     # ---- normalised helpers (VERIFY field paths against live data) ----
     def match_info(self, match_id: str) -> dict:

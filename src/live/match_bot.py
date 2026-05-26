@@ -169,7 +169,7 @@ class MatchBot:
 
     def _settle(self, m: WatchedMatch):
         try:
-            scard = self.api.scorecard_raw(m.match_id)
+            scard = self.api.scoreboard_raw(m.match_id)
             scores = phase_scores_from_scorecard(scard)
         except NotImplementedError:
             self.tg.send(f"ℹ️ {m.event} ended — auto-settle not wired yet "
