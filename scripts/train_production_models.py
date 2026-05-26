@@ -31,6 +31,9 @@ HALF_LIFE = 2.0
 def phase_total(g, tb):
     g = g.sort_values(["over", "ball", "is_legal_delivery"], ascending=[True, True, False]).reset_index(drop=True)
     li = np.where(g["is_legal_delivery"].values)[0]
+    if tb >= 120:
+        # whole innings: count the full total even if all out before 120 balls
+        return int(g["runs_total"].sum()) if len(li) >= 30 else None
     if len(li) < tb:
         return None
     return int(g.iloc[:li[tb-1]+1]["runs_total"].sum())
@@ -128,6 +131,63 @@ ANOM_RAW = {"temp_anom": "temp_c", "humid_anom": "humidity_pct",
 ANOM_FEATURES = ["temp_anom", "humid_anom", "wind_anom", "precip_mm", "cloud_anom"]
 
 
+def deploy_full_innings_trend(balls, league_by_match, model_dir):
+    logger.info("=== full_innings: recency priors + league_trend ===")
+    tb, x_min, x_max, x_step = 120, 80, 280, 5
+    pp = collect_phase_df(balls, tb)
+    default_par = float(pp["total"].mean())
+
+    bat, bowl, ven, trend = {}, {}, {}, {}
+    for s in sorted(pp["season"].unique()):
+        prior = pp[pp["season"] < s]
+        if prior.empty:
+            continue
+        w = np.power(0.5, (s - prior["season"]) / HALF_LIFE)
+        prior = prior.assign(_w=w)
+        for col, tbl in [("batting_team", bat), ("bowling_team", bowl), ("venue", ven)]:
+            for key, gg in prior.groupby(col):
+                tbl[f"{key}|{int(s)}"] = float(np.average(gg["total"], weights=gg["_w"]))
+        prev = pp[pp["season"] == s - 1]
+        if not prev.empty:
+            trend[str(int(s))] = float(prev["total"].mean())
+
+    rows = []
+    for r in pp.itertuples(index=False):
+        s = int(r.season)
+        bp = bat.get(f"{r.batting_team}|{s}", default_par)
+        wp = bowl.get(f"{r.bowling_team}|{s}", default_par)
+        vp = ven.get(f"{r.venue}|{s}", default_par)
+        lt = trend.get(str(s), default_par)
+        league = league_by_match.get(str(r.match_id), "unknown")
+        for X in range(x_min, x_max + 1, x_step):
+            rows.append({"season": s, "league": league, "threshold_X": X,
+                         "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,
+                         "x_minus_par": X - vp, "x_minus_bat": X - bp, "x_minus_bowl": X - wp,
+                         "innings": 1, "league_trend": lt, "x_minus_trend": X - lt,
+                         "actual_over_X": int(r.total >= X)})
+    train_df = pd.DataFrame(rows)
+    for L in LEAGUES:
+        train_df[f"is_{L}"] = (train_df["league"] == L).astype(int)
+
+    features = ["threshold_X", "bat_prior", "bowl_prior", "venue_par",
+                "x_minus_par", "x_minus_bat", "x_minus_bowl", "innings",
+                "league_trend", "x_minus_trend"] + [f"is_{L}" for L in LEAGUES]
+    booster, n = train_booster(train_df, features)
+
+    booster.save_model(str(model_dir / "full_innings_gbm.lgb"))
+    meta = {"features": features, "target_balls": tb, "x_range": [x_min, x_max, x_step],
+            "edge_threshold": 0.05, "implied_min": 0.10, "implied_max": 0.90,
+            "leagues": LEAGUES, "default_par": default_par, "trained_rows": int(n),
+            "best_iter": int(booster.best_iteration),
+            "prior_mode": "recency_halflife2", "has_trend": True}
+    (model_dir / "full_innings_meta.json").write_text(json.dumps(meta, indent=2))
+    (model_dir / "full_innings_bat_prior.json").write_text(json.dumps(bat))
+    (model_dir / "full_innings_bowl_prior.json").write_text(json.dumps(bowl))
+    (model_dir / "full_innings_venue_par.json").write_text(json.dumps(ven))
+    (model_dir / "full_innings_league_trend.json").write_text(json.dumps(trend))
+    logger.info("  saved full_innings (trend) best_iter=%d rows=%d", booster.best_iteration, n)
+
+
 def deploy_phase15_weather(balls, league_by_match, match_dates, weather, model_dir):
     logger.info("=== phase_15: anomaly-weather features ===")
     tb, x_min, x_max, x_step = 90, 60, 250, 5
@@ -223,6 +283,7 @@ def main() -> int:
 
     model_dir = Path("models")
     deploy_phase6_trend(balls, league_by_match, model_dir)
+    deploy_full_innings_trend(balls, league_by_match, model_dir)
     deploy_phase15_weather(balls, league_by_match, match_dates, weather, model_dir)
     return 0
 
