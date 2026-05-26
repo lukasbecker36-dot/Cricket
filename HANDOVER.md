@@ -10,7 +10,7 @@ covers **where we are**, **what we tried**, and **what to do next**.
 
 - **Strategy A (T20 phase Lines)**: trading 6/10/15/20-over Innings Runs Line markets. **Strict OOS validation (2025+) changed our view — see "OOS reckoning" below.** Only **phase_15 has robust OOS edge**; phase_6 needs a trend-aware prior fix; phase_10 is weak.
 - **Strategy B (test cricket lay-the-draw)**: validated on 137 historical Betfair test Match Odds markets (2022-2026). **Market overestimates draws by ~8pp** in the post-Bazball era. Naive returns +50% ROI on stake / +5.5% on capital; filtered to implied ≥15% returns **+11.7% ROI on capital**. Not live yet; waiting for ENG-NZ series. **This is the most robust strategy we have.**
-- **Weather features**: added via Open-Meteo (`src/live/weather.py`). Help phase_15 (+7.7pp mid-band OOS), neutral/negative elsewhere. Powerplay is unaffected by weather (field restrictions dominate).
+- **Weather features**: added via Open-Meteo (`src/live/weather.py`). Help phase_15 for **hot-climate leagues (IPL/PSL)** where data is dense. For England/NTB the signal is **unvalidated** — only ~50 hot English matches exist in all data, so weather predictions there are untrustworthy (treat as human context, not a model input). Now uses **anomaly features** (deviation from venue climatology) to remove the temperature-as-league-proxy confound. Powerplay (phase_6) is unaffected by weather.
 - **Live workflow**: screenshot-driven Telegram bot (no Betfair API). User screenshots a market, Claude vision extracts it, model scores it, bot replies with the signal.
 - **Lesson from live trading**: extreme-confidence signals (`|p − 0.5| > 0.30`) are unreliable. But ALSO — see OOS reckoning: even the mid-band edge for phase_6/10 didn't survive strict OOS until we added trend awareness.
 - **Open question**: whether to bypass the Hetzner→Betfair IP block (if it is one) to automate price ingestion instead of screenshots. Diagnostic script ready (`scripts/diagnose_betfair_access.py`).
@@ -347,8 +347,21 @@ edge until the trend-feature fix, and phase_15 is the reliable phase.
 - `scripts/train_phase_models_with_weather.py` — trains `phase_{N}_wx` models
 - `scripts/compare_phase_models_with_without_weather.py` — v1-vs-v2 backtest
 - `scripts/oos_weather_check.py` — strict 2025+ OOS isolating weather contribution
+- `scripts/anomaly_weather_oos.py` — per-league OOS comparing baseline vs absolute vs anomaly weather. Showed absolute weather is **inert for cool leagues** (BBL/NTB identical to baseline) because hot-weather data is 98% IPL/PSL. Anomaly features lift cool-league ROI +22%→+30% but on tiny samples (n=15).
 - **71 venues failed geocoding** (minor English county grounds). Add their coords
   to `VENUE_OVERRIDES` to lift coverage 75% → ~95%.
+
+### Production models deployed (2026-05-26)
+
+`scripts/train_production_models.py` trains and deploys:
+- **phase_6**: recency-weighted priors (half-life 2 seasons) + `league_trend` feature. Companion: `phase_6_league_trend.json`. Recovers the scoring-inflation lag.
+- **phase_15**: anomaly-weather features (deviation from venue climatology). Companion: `phase_15_venue_climo.json`. `weather_mode: anomaly` in meta.
+
+`FullInningsModel.predict_p` (in `src/live/signals.py`) now supports both: it loads the trend table + venue climatology if present, accepts a `weather=` dict, and computes `league_trend`/`x_minus_trend` and anomaly features automatically. Backward-compatible — models without these companions behave as before.
+
+**Backups of pre-trend/weather models** in `models/_backup_pre_trend_weather/`.
+
+**Weather caveat (important):** the anomaly design is correct and removes the league-proxy confound, but English/NTB weather remains statistically unvalidated (too few hot English matches). Per-match weather predictions for England are directionally untrustworthy — a hot day still nudges P(over) *down* at test points, which is backwards. Use weather as human context for English cricket, not as an acted-on model input.
 
 ### Decay investigation (built 2026-05-26)
 
