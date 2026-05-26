@@ -91,20 +91,27 @@ def build_inn2_data(balls: pd.DataFrame, target_balls: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_priors(df: pd.DataFrame) -> tuple[dict, dict, dict]:
-    """Strictly-prior-season per-(team, season) and (venue, season) means."""
-    bat, bowl, ven = {}, {}, {}
+HALF_LIFE = 2.0  # seasons, for recency weighting
+
+
+def build_priors(df: pd.DataFrame) -> tuple[dict, dict, dict, dict]:
+    """Recency-weighted (half-life 2 seasons) strictly-prior-season priors,
+    plus a league_trend table = league's prior-season mean inn2 phase total.
+    Recency + trend correct the scoring-inflation lag (same fix as inn1)."""
+    bat, bowl, ven, trend = {}, {}, {}, {}
     for s in sorted(df["season"].unique()):
         prior = df[df["season"] < s]
         if prior.empty:
             continue
-        for t, m in prior.groupby("batting_team")["phase_total"].mean().items():
-            bat[f"{t}|{int(s)}"] = float(m)
-        for t, m in prior.groupby("bowling_team")["phase_total"].mean().items():
-            bowl[f"{t}|{int(s)}"] = float(m)
-        for v, m in prior.groupby("venue")["phase_total"].mean().items():
-            ven[f"{v}|{int(s)}"] = float(m)
-    return bat, bowl, ven
+        w = np.power(0.5, (s - prior["season"]) / HALF_LIFE)
+        prior = prior.assign(_w=w)
+        for col, tbl in [("batting_team", bat), ("bowling_team", bowl), ("venue", ven)]:
+            for key, gg in prior.groupby(col):
+                tbl[f"{key}|{int(s)}"] = float(np.average(gg["phase_total"], weights=gg["_w"]))
+        prev = df[df["season"] == s - 1]
+        if not prev.empty:
+            trend[str(int(s))] = float(prev["phase_total"].mean())
+    return bat, bowl, ven, trend
 
 
 def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_step: int,
@@ -118,7 +125,7 @@ def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_ste
     # Priors are computed from the full set but each season key uses only
     # strictly-prior seasons, so this is leak-free even when later seasons
     # are present. We need priors for the eval seasons too.
-    bat_pp, bowl_pp, ven_par = build_priors(df_all)
+    bat_pp, bowl_pp, ven_par, league_trend = build_priors(df_all)
 
     if MAX_TRAIN_SEASON is not None:
         df = df_all[df_all["season"] <= MAX_TRAIN_SEASON].copy()
@@ -137,6 +144,7 @@ def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_ste
         league = league_by_match.get(str(r.match_id), "unknown")
         # Implied "par" for this phase given the target (linear pacing)
         phase_par_from_target = float(r.target) * target_balls / 120.0
+        lt = league_trend.get(str(season), default_par)
         for X in range(x_min, x_max + 1, x_step):
             rows.append({
                 "match_id": r.match_id, "season": season, "league": league,
@@ -148,6 +156,8 @@ def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_ste
                 "x_minus_bat": X - bat_prior,
                 "x_minus_bowl": X - bowl_prior,
                 "x_minus_target_par": X - phase_par_from_target,
+                "league_trend": lt,
+                "x_minus_trend": X - lt,
                 "innings": 2,
                 "actual_over_X": int(r.phase_total >= X),
             })
@@ -159,6 +169,7 @@ def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_ste
         "threshold_X", "bat_prior", "bowl_prior", "venue_par",
         "target", "phase_par_from_target",
         "x_minus_par", "x_minus_bat", "x_minus_bowl", "x_minus_target_par",
+        "league_trend", "x_minus_trend",
         "innings",
     ] + [f"is_{L}" for L in LEAGUES]
     train_df = train_df.dropna(subset=features + ["actual_over_X"])
@@ -189,11 +200,13 @@ def train_one(phase_label: str, target_balls: int, x_min: int, x_max: int, x_ste
         "trained_rows": int(len(x)), "best_iter": int(booster.best_iteration),
         "innings": 2,
         "max_train_season": MAX_TRAIN_SEASON,
+        "prior_mode": "recency_halflife2", "has_trend": True,
     }
     (model_dir / f"{phase_label}_inn2_meta.json").write_text(json.dumps(meta, indent=2))
     (model_dir / f"{phase_label}_inn2_bat_prior.json").write_text(json.dumps(bat_pp))
     (model_dir / f"{phase_label}_inn2_bowl_prior.json").write_text(json.dumps(bowl_pp))
     (model_dir / f"{phase_label}_inn2_venue_par.json").write_text(json.dumps(ven_par))
+    (model_dir / f"{phase_label}_inn2_league_trend.json").write_text(json.dumps(league_trend))
     logger.info("  saved %s_inn2_gbm.lgb (best_iter=%d)", phase_label, booster.best_iteration)
 
 
