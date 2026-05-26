@@ -75,6 +75,11 @@ class FullInningsModel:
                 self.bowl_pp = json.loads(p.read_text())
                 break
         self.venue_par = json.loads((model_dir / f"{prefix}_venue_par.json").read_text())
+        # Optional: trend-aware companion. {season: league_avg_phase_total_prior_season}
+        trend_path = model_dir / f"{prefix}_league_trend.json"
+        self.league_trend: dict = json.loads(trend_path.read_text()) if trend_path.exists() else {}
+        # Optional: weather feature medians for imputation (stored in meta)
+        self.weather_medians: dict = self.meta.get("weather_medians", {})
 
     def _lookup(self, table: dict, team: str, season: int) -> float:
         return float(table.get(f"{team}|{season}", self.default_par))
@@ -82,11 +87,15 @@ class FullInningsModel:
     def predict_p(self, *, threshold_X: int, implied_open: float,
                   batting_team: str, bowling_team: str, venue: str,
                   season: int, innings: int, league: str | None,
-                  target: float | None = None) -> float:
+                  target: float | None = None,
+                  weather: dict | None = None) -> float:
         bat_prior = self._lookup(self.bat_pp, batting_team, season)
         bowl_prior = self._lookup(self.bowl_pp, bowling_team, season)
         v_par = self._lookup(self.venue_par, venue, season)
         phase_par_from_target = (float(target) * self.target_balls / 120.0) if target is not None else 0.0
+        # Trend feature: league's prior-season average phase total. Falls back to
+        # default_par when this season isn't in the trend table.
+        trend = float(self.league_trend.get(str(int(season)), self.default_par)) if self.league_trend else self.default_par
         row = {
             "threshold_X": float(threshold_X),
             "implied_open": float(implied_open),
@@ -100,11 +109,19 @@ class FullInningsModel:
             "target": float(target) if target is not None else 0.0,
             "phase_par_from_target": phase_par_from_target,
             "x_minus_target_par": float(threshold_X) - phase_par_from_target,
+            "league_trend": trend,
+            "x_minus_trend": float(threshold_X) - trend,
         }
+        # Weather features: use provided values, else median-impute from meta.
+        for f in ("temp_c", "humidity_pct", "wind_kph", "precip_mm", "cloud_pct"):
+            if f in self.features:
+                val = (weather or {}).get(f)
+                if val is None and self.weather_medians:
+                    val = self.weather_medians.get(f)
+                row[f] = float(val) if val is not None else 0.0
         for L in self.leagues:
             row[f"is_{L}"] = 1.0 if league == L else 0.0
-        # Phase models don't include implied_open in their feature set; build
-        # the row vector strictly from self.features so missing keys aren't sent.
+        # Build the row vector strictly from self.features so missing keys aren't sent.
         x = np.array([[row.get(f, 0.0) for f in self.features]], dtype=np.float32)
         return float(self.booster.predict(x)[0])
 
