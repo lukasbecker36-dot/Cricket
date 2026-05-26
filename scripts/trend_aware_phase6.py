@@ -26,9 +26,13 @@ from src.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
+import os
+
 LEAGUES = ["ipl", "bbl", "psl", "cpl", "ntb"]
-TARGET_BALLS = 36
-X_MIN, X_MAX, X_STEP = 20, 110, 5
+# Phase configurable via env so the same script validates phase_6 and phase_10.
+_PHASE = os.environ.get("TREND_PHASE", "phase_6")
+_CFG = {"phase_6": (36, 20, 110, 5), "phase_10": (60, 40, 175, 5)}[_PHASE]
+TARGET_BALLS, X_MIN, X_MAX, X_STEP = _CFG
 MAX_TRAIN_SEASON = 2024
 HALF_LIFE = 2.0  # seasons
 
@@ -192,8 +196,8 @@ def main() -> int:
     default_par = float(pp_all[pp_all["season"] <= MAX_TRAIN_SEASON]["total"].mean())
 
     eval_df = pd.read_parquet("data/processed/eval_phase_lines.parquet")
-    eval_df = eval_df[(eval_df["phase"] == "phase_6") & (eval_df["season"] >= 2025)].copy()
-    logger.info("2025+ phase_6 eval rows: %d", len(eval_df))
+    eval_df = eval_df[(eval_df["phase"] == _PHASE) & (eval_df["season"] >= 2025)].copy()
+    logger.info("2025+ %s eval rows: %d", _PHASE, len(eval_df))
 
     print(f"\n{'variant':<22} {'all n':>6} {'all ROI':>9} {'all win':>8} | {'mid n':>6} {'mid ROI':>9} {'mid win':>8}")
     print("-" * 80)
