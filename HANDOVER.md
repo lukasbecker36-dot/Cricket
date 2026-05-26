@@ -57,6 +57,16 @@ inn1-only (4 mkts)  +£602 over 574 trades = +21% ROI  ← honest deployable num
 4. **inn2 ROI (64%/82%) is inflated** by the chase-end settlement asymmetry (market settles on final total when chase ends early). Real edge is lower; trade small/sceptically.
 5. Caveats: LTP-based (no slippage beyond 5% commission), 2.0 odds assumed — real fills shave ROI.
 
+### Two further hidden flaws found & fixed (2026-05-26)
+
+Investigated via `scripts/investigate_hidden_flaws.py`:
+
+1. **Rain-reduced innings polluting full_innings training.** 176 of 4,111 (4.3%) inn1 rows were rain-shortened (<118 legal balls, not all-out) but logged as full-innings totals averaging 123 vs 167 for complete innings — dragging priors/labels DOWN, worst in NTB (6.0%) and BBL (5.0%). Fixed: `phase_total` for tb≥120 now requires ≥118 legal balls OR all-out. Lifted full_innings mid-band OOS +15.2% → +21.2%.
+
+2. **Franchise rebrands falling to `default_par`.** 9.6% of (team, season) prior lookups missed. The live smoking gun: "Royal Challengers Bengaluru" missed its own history (stored under "Bangalore") → priced at default_par 167 instead of its true 177 (~10 runs low). Fixed: `src/ingestion/teams.py:canonical_team()` merges rebrands/spelling variants (RCB, Kings XI→Punjab Kings, Delhi Daredevils→Capitals, Rising Pune), applied in prior-building AND `signals.py` inference. Lifted phase_6 mid-band OOS −6.0% → −1.4%. Genuinely new franchises (Gujarat Titans, Lucknow) still correctly have no prior.
+
+Aggregate effect was modest (total full-signal £968 → £991) because each flaw touched only 4-10% of rows, but the per-affected-match correction is large and concentrated in markets we trade (English full-innings, RCB).
+
 **All models corrected for scoring-inflation lag (the biggest hidden flaw).** full_innings was the worst case: par for the Hampshire test moved 141 → 175 after the fix (market 187, actual 200 — old model would have lost badly backing under). The earlier "+24-44% ROI" full-sample headlines were in-sample inflated; the £5 OOS table above is the honest read.
 
 **The scoring-inflation lag was the single biggest hidden problem.** Every phase model used backward-looking equal-weight priors that systematically underestimated the modern game. The fix (recency-weighted priors + a `league_trend` feature = the league's prior-season average) is deployed everywhere. Re-apply it to any new model.
