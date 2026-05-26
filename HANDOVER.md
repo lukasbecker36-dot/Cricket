@@ -239,6 +239,18 @@ For each test, ~60 min before scheduled start:
 - ENG-NZ is just 3 trades; better to validate the strategy live first
 - Build a model later (Strategy B v2) when we have 200+ test trades to learn from
 
+### Inn2 models now trend-corrected (2026-05-26)
+
+`phase_6_inn2` and `phase_10_inn2` were the last models on stale priors. Now
+rebuilt with recency-weighted priors (half-life 2) + `league_trend` feature,
+keeping their target-awareness. Companions: `phase_{6,10}_inn2_league_trend.json`.
+The fix corrected the par-line direction: for Essex chasing 201 at Rose Bowl,
+the 6-over inn2 par moved 51 → 55 (was implausibly below the inn1 par; now matches
+it), and 10-over moved 89.5 → 97 (chase acceleration now reflected). The full-signal
+OOS backtest was unchanged (+63%/+82%) because it's dominated by the chase-end
+settlement-asymmetry exploit, not the mid-band where the lag mattered — so the
+par-line direction is the better evidence here. Trained on all seasons for production.
+
 ### Pending for Strategy B
 
 1. **Forward-validate on ENG-NZ** (3 tests). Paper-trade if uncertain about live execution.

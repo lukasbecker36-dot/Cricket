@@ -47,7 +47,7 @@ LEAGUES = ["ipl", "bbl", "psl", "cpl", "ntb"]
 # Train cut-off: matches in seasons > MAX_TRAIN_SEASON are held out for OOS
 # validation. Set to None to train on everything (for production after
 # validation passes).
-MAX_TRAIN_SEASON: int | None = 2023
+MAX_TRAIN_SEASON: int | None = None
 
 
 def inn2_phase_outcome(g: pd.DataFrame, target_balls: int, inn1_total: int) -> int | None:
