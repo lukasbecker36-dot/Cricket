@@ -116,6 +116,11 @@ def main() -> int:
     eval_all["date"] = eval_all["match_id"].astype(str).map(match_dates)
     eval_all = eval_all.merge(weather, on=["venue", "date"], how="left")
 
+    # full-innings (20-over) line markets live in a different eval file
+    eval_full = pd.read_parquet("data/processed/eval_line_combined.parquet")
+    eval_full = eval_full[eval_full["innings"] == 1].copy()
+    eval_full["phase"] = "full_innings"
+
     results = []
     for plabel, ekey, tb, xmn, xmx, xst, mode in PHASES:
         pp = collect_phase_df(balls, tb)
@@ -185,8 +190,9 @@ def main() -> int:
             feats = base_feats + ["temp_anom", "humid_anom", "wind_anom", "precip_mm", "cloud_anom"] + [f"is_{L}" for L in LEAGUES]
         booster = train_booster(tr, feats)
 
-        # eval 2025+
-        sub = eval_all[(eval_all["phase"] == ekey) & (eval_all["season"] >= 2025)].copy()
+        # eval 2025+ (full_innings uses its own eval file)
+        src = eval_full if ekey == "full_innings" else eval_all
+        sub = src[(src["phase"] == ekey) & (src["season"] >= 2025)].copy()
         if sub.empty:
             continue
 
@@ -219,6 +225,96 @@ def main() -> int:
         sub["actual_over"] = (sub["actual_total"] > sub["line_t_minus_1"]).astype(int)
         sub["actual_under"] = (sub["actual_total"] < sub["line_t_minus_1"]).astype(int)
         results.append((plabel, bt(sub, "p", STAKE, False), bt(sub, "p", STAKE, True)))
+
+    # ---- inn2 phases (target-aware; trained <=2023, eval 2024+) ----
+    inn1_totals = balls[balls["innings"] == 1].groupby("match_id")["runs_total"].sum().astype(int).to_dict()
+
+    def inn2_outcome(g, tb, inn1_total):
+        g = g.sort_values(["over", "ball", "is_legal_delivery"], ascending=[True, True, False]).reset_index(drop=True)
+        li = np.where(g["is_legal_delivery"].values)[0]
+        if len(li) == 0:
+            return None
+        if len(li) >= tb:
+            return int(g.iloc[:li[tb-1]+1]["runs_total"].sum())
+        wk = int(g["wicket"].fillna(False).astype(bool).sum())
+        ft = int(g["runs_total"].sum())
+        return ft if (wk >= 10 or ft > inn1_total) else None
+
+    eval_inn2 = pd.read_parquet("data/processed/eval_phase_lines_inn2.parquet")
+    INN2_CUT = 2023
+    for plabel, tb, xmn, xmx, xst in [("phase_6", 36, 20, 110, 5), ("phase_10", 60, 40, 175, 5)]:
+        # build inn2 data
+        rows_d = []
+        for (mid, inn), g in balls.groupby(["match_id", "innings"]):
+            if int(inn) != 2:
+                continue
+            out = inn2_outcome(g, tb, inn1_totals.get(mid, 0))
+            if out is None:
+                continue
+            tgt = g["target"].dropna()
+            if tgt.empty:
+                continue
+            rows_d.append({"match_id": mid, "season": int(g["season"].iloc[0]),
+                           "batting_team": g["batting_team"].iloc[0], "bowling_team": g["bowling_team"].iloc[0],
+                           "venue": g["venue"].iloc[0], "target": float(tgt.iloc[0]), "phase_total": out})
+        dd = pd.DataFrame(rows_d)
+        bat, bowl, ven, trend = {}, {}, {}, {}
+        for s in sorted(dd["season"].unique()):
+            prior = dd[dd["season"] < s]
+            if prior.empty:
+                continue
+            w = np.power(0.5, (s - prior["season"]) / HALF_LIFE)
+            prior = prior.assign(_w=w)
+            for col, tbl in [("batting_team", bat), ("bowling_team", bowl), ("venue", ven)]:
+                for key, gg in prior.groupby(col):
+                    tbl[f"{key}|{int(s)}"] = float(np.average(gg["phase_total"], weights=gg["_w"]))
+            prev = dd[dd["season"] == s - 1]
+            if not prev.empty:
+                trend[str(int(s))] = float(prev["phase_total"].mean())
+        default_par = float(dd["phase_total"].mean())
+        tr_rows = []
+        for r in dd[dd["season"] <= INN2_CUT].itertuples(index=False):
+            s = int(r.season)
+            bp = bat.get(f"{r.batting_team}|{s}", default_par); wp = bowl.get(f"{r.bowling_team}|{s}", default_par)
+            vp = ven.get(f"{r.venue}|{s}", default_par); lt = trend.get(str(s), default_par)
+            league = league_by_match.get(str(r.match_id), "unknown")
+            ppt = float(r.target) * tb / 120.0
+            for X in range(xmn, xmx + 1, xst):
+                tr_rows.append({"season": s, "league": league, "threshold_X": X, "bat_prior": bp,
+                    "bowl_prior": wp, "venue_par": vp, "target": float(r.target), "phase_par_from_target": ppt,
+                    "x_minus_par": X - vp, "x_minus_bat": X - bp, "x_minus_bowl": X - wp,
+                    "x_minus_target_par": X - ppt, "league_trend": lt, "x_minus_trend": X - lt,
+                    "innings": 2, "actual_over_X": int(r.phase_total >= X)})
+        tr = pd.DataFrame(tr_rows)
+        for L in LEAGUES:
+            tr[f"is_{L}"] = (tr["league"] == L).astype(int)
+        feats = ["threshold_X", "bat_prior", "bowl_prior", "venue_par", "target", "phase_par_from_target",
+                 "x_minus_par", "x_minus_bat", "x_minus_bowl", "x_minus_target_par",
+                 "league_trend", "x_minus_trend", "innings"] + [f"is_{L}" for L in LEAGUES]
+        booster = train_booster(tr, feats)
+
+        sub = eval_inn2[(eval_inn2["phase"] == plabel) & (eval_inn2["season"] > INN2_CUT)].copy()
+        if sub.empty:
+            continue
+
+        def score2(rr):
+            s = int(rr["season"])
+            bp = bat.get(f"{rr['batting_team']}|{s}", default_par); wp = bowl.get(f"{rr['bowling_team']}|{s}", default_par)
+            vp = ven.get(f"{rr['venue']}|{s}", default_par); lt = trend.get(str(s), default_par)
+            X = int(round(rr["line_t_minus_1"])); ppt = float(rr["target"]) * tb / 120.0
+            d = {"threshold_X": float(X), "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,
+                 "target": float(rr["target"]), "phase_par_from_target": ppt,
+                 "x_minus_par": X - vp, "x_minus_bat": X - bp, "x_minus_bowl": X - wp,
+                 "x_minus_target_par": X - ppt, "league_trend": lt, "x_minus_trend": X - lt, "innings": 2}
+            for L in LEAGUES:
+                d[f"is_{L}"] = 1.0 if rr["league"] == L else 0.0
+            xv = np.array([[d.get(f, 0.0) for f in feats]], dtype=np.float32)
+            return float(booster.predict(xv)[0])
+
+        sub["p"] = sub.apply(score2, axis=1)
+        sub["actual_over"] = (sub["actual_total"] > sub["line_t_minus_1"]).astype(int)
+        sub["actual_under"] = (sub["actual_total"] < sub["line_t_minus_1"]).astype(int)
+        results.append((f"{plabel}_inn2", bt(sub, "p", STAKE, False), bt(sub, "p", STAKE, True)))
 
     print(f"\n===== PRODUCTION-CONFIG OOS BACKTEST (train <=2024, eval 2025+) =====")
     print(f"£{STAKE:.0f} stake, odds {ODDS}, {COMMISSION:.0%} commission")
