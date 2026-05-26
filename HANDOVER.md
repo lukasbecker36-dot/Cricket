@@ -34,11 +34,14 @@ phase_15 weather   +37.2%    +21.9%  ✓ weather helps
 - The edge IS real, but our model points the wrong way: its priors are backward-looking averages that lag the rising trend, so it bets UNDER and loses.
 - **Fix found** (`scripts/trend_aware_phase6.py`): adding a `league_trend` feature (league's PP avg in the prior season) recovers phase_6 from +9.5%/-7.3% to **+14.9%/-0.2%** OOS. The trend feature is what matters; recency-weighting alone doesn't help.
 
-**Current trading stance:**
-- **phase_15**: trade it, adopt the weather model. Robust OOS edge.
-- **phase_6**: needs the trend-aware prior deployed before trading (validated but not yet wired into live scoring). Then marginal/positive.
-- **phase_10**: park it — no clean inefficiency, weak OOS. Test the trend feature here too before reviving.
-- **The earlier "+24-44% ROI" headline numbers were in-sample inflated.** Honest OOS numbers are roughly half that.
+**Current trading stance (after trend fix deployed across all phases):**
+- **phase_15**: trade it, anomaly-weather model deployed. Robust OOS edge (+22% mid-band).
+- **phase_6**: trend-aware model deployed. Recovered to +14.9% full / -0.2% mid OOS. Marginal but no longer losing.
+- **phase_10**: trend-aware model deployed. Recovered from -20.6% to +2.5% mid / +16.7% full OOS. Revived.
+- **full_innings (20-over)**: trend-aware model deployed. Par for the Hampshire test moved 141 → 175 (market was 187, actual 200 — old model would have lost badly backing under).
+- **The earlier "+24-44% ROI" headline numbers were in-sample inflated.** Honest OOS numbers are roughly half that. All four phase models now corrected for scoring-inflation lag.
+
+**The scoring-inflation lag was the single biggest hidden problem.** Every phase model used backward-looking equal-weight priors that systematically underestimated the modern game. The fix (recency-weighted priors + a `league_trend` feature = the league's prior-season average) is deployed everywhere. Re-apply it to any new model.
 
 ## Project evolution (what we tried, what worked)
 
@@ -354,8 +357,10 @@ edge until the trend-feature fix, and phase_15 is the reliable phase.
 ### Production models deployed (2026-05-26)
 
 `scripts/train_production_models.py` trains and deploys:
-- **phase_6**: recency-weighted priors (half-life 2 seasons) + `league_trend` feature. Companion: `phase_6_league_trend.json`. Recovers the scoring-inflation lag.
+- **phase_6, phase_10, full_innings**: recency-weighted priors (half-life 2 seasons) + `league_trend` feature. Companion: `{prefix}_league_trend.json`. Corrects the scoring-inflation lag.
 - **phase_15**: anomaly-weather features (deviation from venue climatology). Companion: `phase_15_venue_climo.json`. `weather_mode: anomaly` in meta.
+- NOTE: full_innings now uses `_bat_prior.json` not the old `_bat_pp.json` — the old `_pp` files were removed so the loader picks up the new trend priors. `signals.py` tries `_bat_pp` first then `_bat_prior`.
+- `scripts/trend_aware_phase6.py` validates the trend fix per-phase (env `TREND_PHASE=phase_6|phase_10`).
 
 `FullInningsModel.predict_p` (in `src/live/signals.py`) now supports both: it loads the trend table + venue climatology if present, accepts a `weather=` dict, and computes `league_trend`/`x_minus_trend` and anomaly features automatically. Backward-compatible — models without these companions behave as before.
 
