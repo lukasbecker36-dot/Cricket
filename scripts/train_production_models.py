@@ -123,12 +123,31 @@ def deploy_phase6_trend(balls, league_by_match, model_dir):
     logger.info("  saved phase_6 (trend) best_iter=%d rows=%d", booster.best_iteration, n)
 
 
+ANOM_RAW = {"temp_anom": "temp_c", "humid_anom": "humidity_pct",
+            "wind_anom": "wind_kph", "cloud_anom": "cloud_pct"}
+ANOM_FEATURES = ["temp_anom", "humid_anom", "wind_anom", "precip_mm", "cloud_anom"]
+
+
 def deploy_phase15_weather(balls, league_by_match, match_dates, weather, model_dir):
-    logger.info("=== phase_15: weather features ===")
+    logger.info("=== phase_15: anomaly-weather features ===")
     tb, x_min, x_max, x_step = 90, 60, 250, 5
     pp = collect_phase_df(balls, tb)
     default_par = float(pp["total"].mean())
     medians = {f: float(weather[f].median()) for f in WEATHER_FEATURES}
+
+    # Venue climatology (mean match-day conditions) for anomaly baseline.
+    climo_vars = ["temp_c", "humidity_pct", "wind_kph", "cloud_pct"]
+    venue_climo = weather.groupby("venue")[climo_vars].mean().to_dict(orient="index")
+    venue_climo = {v: {k: float(val) for k, val in d.items()} for v, d in venue_climo.items()}
+    global_climo = {k: float(weather[k].mean()) for k in climo_vars}
+
+    def anomalies(venue, raw):
+        base = venue_climo.get(venue, global_climo)
+        out = {}
+        for anom_feat, raw_var in ANOM_RAW.items():
+            out[anom_feat] = float(raw[raw_var]) - float(base.get(raw_var, global_climo[raw_var]))
+        out["precip_mm"] = float(raw["precip_mm"])
+        return out
 
     # equal-weight priors (standard)
     bat, bowl, ven = {}, {}, {}
@@ -152,14 +171,17 @@ def deploy_phase15_weather(balls, league_by_match, match_dates, weather, model_d
         league = league_by_match.get(str(r.match_id), "unknown")
         mdate = match_dates.get(str(r.match_id))
         wx = weather[(weather["venue"] == r.venue) & (weather["date"] == mdate)]
-        wxf = {f: (wx[f].iloc[0] if not wx.empty and not pd.isna(wx[f].iloc[0]) else medians[f])
-               for f in WEATHER_FEATURES}
+        if not wx.empty:
+            raw = {f: (wx[f].iloc[0] if not pd.isna(wx[f].iloc[0]) else medians[f]) for f in WEATHER_FEATURES}
+        else:
+            raw = dict(medians)
+        anomf = anomalies(r.venue, raw)
         for X in range(x_min, x_max + 1, x_step):
             row = {"season": s, "league": league, "threshold_X": X,
                    "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,
                    "x_minus_par": X - vp, "x_minus_bat": X - bp, "x_minus_bowl": X - wp,
                    "innings": 1, "actual_over_X": int(r.total >= X)}
-            row.update(wxf)
+            row.update(anomf)
             rows.append(row)
     train_df = pd.DataFrame(rows)
     for L in LEAGUES:
@@ -167,19 +189,21 @@ def deploy_phase15_weather(balls, league_by_match, match_dates, weather, model_d
 
     features = ["threshold_X", "bat_prior", "bowl_prior", "venue_par",
                 "x_minus_par", "x_minus_bat", "x_minus_bowl", "innings"] + \
-               WEATHER_FEATURES + [f"is_{L}" for L in LEAGUES]
+               ANOM_FEATURES + [f"is_{L}" for L in LEAGUES]
     booster, n = train_booster(train_df, features)
 
     booster.save_model(str(model_dir / "phase_15_gbm.lgb"))
     meta = {"features": features, "target_balls": tb, "x_range": [x_min, x_max, x_step],
             "edge_threshold": 0.05, "implied_min": 0.10, "implied_max": 0.90,
             "leagues": LEAGUES, "default_par": default_par, "trained_rows": int(n),
-            "best_iter": int(booster.best_iteration), "weather_medians": medians}
+            "best_iter": int(booster.best_iteration), "weather_mode": "anomaly"}
     (model_dir / "phase_15_meta.json").write_text(json.dumps(meta, indent=2))
     (model_dir / "phase_15_bat_prior.json").write_text(json.dumps(bat))
     (model_dir / "phase_15_bowl_prior.json").write_text(json.dumps(bowl))
     (model_dir / "phase_15_venue_par.json").write_text(json.dumps(ven))
-    logger.info("  saved phase_15 (weather) best_iter=%d rows=%d", booster.best_iteration, n)
+    (model_dir / "phase_15_venue_climo.json").write_text(
+        json.dumps({"by_venue": venue_climo, "global": global_climo}))
+    logger.info("  saved phase_15 (anomaly-weather) best_iter=%d rows=%d", booster.best_iteration, n)
 
 
 def main() -> int:

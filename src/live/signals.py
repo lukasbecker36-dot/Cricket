@@ -80,6 +80,16 @@ class FullInningsModel:
         self.league_trend: dict = json.loads(trend_path.read_text()) if trend_path.exists() else {}
         # Optional: weather feature medians for imputation (stored in meta)
         self.weather_medians: dict = self.meta.get("weather_medians", {})
+        # Optional: anomaly-weather companion. Per-venue climatological normals
+        # used to convert raw conditions into deviations-from-normal so 'hot'
+        # means the same in England and India. {venue: {var: mean}} + global fallback.
+        climo_path = model_dir / f"{prefix}_venue_climo.json"
+        if climo_path.exists():
+            blob = json.loads(climo_path.read_text())
+            self.venue_climo: dict = blob.get("by_venue", {})
+            self.global_climo: dict = blob.get("global", {})
+        else:
+            self.venue_climo, self.global_climo = {}, {}
 
     def _lookup(self, table: dict, team: str, season: int) -> float:
         return float(table.get(f"{team}|{season}", self.default_par))
@@ -112,13 +122,29 @@ class FullInningsModel:
             "league_trend": trend,
             "x_minus_trend": float(threshold_X) - trend,
         }
-        # Weather features: use provided values, else median-impute from meta.
+        # Absolute weather features: use provided values, else median-impute.
         for f in ("temp_c", "humidity_pct", "wind_kph", "precip_mm", "cloud_pct"):
             if f in self.features:
                 val = (weather or {}).get(f)
                 if val is None and self.weather_medians:
                     val = self.weather_medians.get(f)
                 row[f] = float(val) if val is not None else 0.0
+        # Anomaly weather features: deviation from this venue's climatological
+        # normal. Missing weather -> 0 anomaly (assume normal conditions).
+        anom_map = {"temp_anom": "temp_c", "humid_anom": "humidity_pct",
+                    "wind_anom": "wind_kph", "cloud_anom": "cloud_pct"}
+        for anom_feat, raw_var in anom_map.items():
+            if anom_feat in self.features:
+                raw = (weather or {}).get(raw_var)
+                if raw is None:
+                    row[anom_feat] = 0.0
+                else:
+                    base = (self.venue_climo.get(venue, {}).get(raw_var)
+                            if venue in self.venue_climo else None)
+                    if base is None:
+                        base = self.global_climo.get(raw_var, float(raw))
+                    row[anom_feat] = float(raw) - float(base)
+        # precip stays absolute even in anomaly mode (handled in the loop above)
         for L in self.leagues:
             row[f"is_{L}"] = 1.0 if league == L else 0.0
         # Build the row vector strictly from self.features so missing keys aren't sent.
