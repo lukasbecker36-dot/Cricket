@@ -27,7 +27,7 @@ from pathlib import Path
 
 from src.ingestion.teams import canonical_team
 from src.live.cricket_data import (CricketDataClient, batting_first,
-                                    phase_scores_from_bbb)
+                                    phase_scores_from_scorecard)
 from src.live.line_projector import format_projections, project_innings
 from src.live.signals import detect_league_from_event, load_models
 from src.live.trade_log import Trade, log_trade, settle_match, summary
@@ -169,10 +169,14 @@ class MatchBot:
 
     def _settle(self, m: WatchedMatch):
         try:
-            bbb = self.api.ball_by_ball(m.match_id)
-            scores = phase_scores_from_bbb(bbb)
+            scard = self.api.scorecard_raw(m.match_id)
+            scores = phase_scores_from_scorecard(scard)
+        except NotImplementedError:
+            self.tg.send(f"ℹ️ {m.event} ended — auto-settle not wired yet "
+                         f"(scorecard endpoint pending). Settle manually with the score.")
+            return
         except Exception as e:
-            self.tg.send(f"⚠️ couldn't fetch ball-by-ball to settle {m.event}: {e}")
+            self.tg.send(f"⚠️ couldn't fetch scorecard to settle {m.event}: {e}")
             return
         settled = settle_match(m.match_id, scores)
         if settled:
