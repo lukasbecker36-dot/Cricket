@@ -98,6 +98,27 @@ across two feature designs + the physical mechanism, but the phase_6 gain is ~1.
 through `line_projector` / the bot (needs a lineup source; the strength builder's
 player-season ratings can compute it from an announced XI).
 
+### Calibration audit + Platt scaling (2026-05-27)
+
+`scripts/calibration_audit.py` (reliability + ECE on 2025+ betfair-line OOS) and
+`scripts/build_calibrators.py` (walk-forward Platt fit). Key finding — **two
+sample sizes disagreed, trust the big one:**
+- Betfair-line audit (n=321): phase_6/10 ECE ~0.12 (looked badly miscalibrated)
+- Walk-forward across full threshold sweep (n=31k–46k): ECE ~0.016 (well-calibrated)
+
+The 0.12 was **mostly small-sample noise**; the model's probabilities are basically
+sound. Deployed **mild** Platt calibrators for phase_6/10 (`models/phase_{6,10}_platt.json`,
+B≈0.2 upward nudge matching base over-rate); `signals.py` applies
+`sigmoid(A*logit(p)+B)` when present. phase_15/full are well-calibrated → no calibrator.
+
+**Residual real effect (not noise):** in the audit's strong-under bin (high lines)
+the model said 13% over but 32% happened (~3.7 SE on n=81) — a genuine residual
+scoring-inflation tilt. The mild global calibrator only partially corrects it, so
+**strong-under signals on phase_6/10 remain slightly less safe than the model says.**
+Region-aware calibration would fix it but needs more data than ~300 betfair points
+allow without overfitting. Lesson: a big recalibration fit to 321 points would have
+been overfitting; the robust mild correction is the disciplined choice.
+
 **All models corrected for scoring-inflation lag (the biggest hidden flaw).** full_innings was the worst case: par for the Hampshire test moved 141 → 175 after the fix (market 187, actual 200 — old model would have lost badly backing under). The earlier "+24-44% ROI" full-sample headlines were in-sample inflated; the £5 OOS table above is the honest read.
 
 **The scoring-inflation lag was the single biggest hidden problem.** Every phase model used backward-looking equal-weight priors that systematically underestimated the modern game. The fix (recency-weighted priors + a `league_trend` feature = the league's prior-season average) is deployed everywhere. Re-apply it to any new model.
