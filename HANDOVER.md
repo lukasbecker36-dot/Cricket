@@ -69,6 +69,35 @@ Aggregate effect was modest (total full-signal £968 → £991) because each fla
 
 3. **Venue name fragmentation** (same class as #2, for grounds). Cricsheet logs one ground under multiple strings ("Grace Road" vs "Grace Road, Leicester"; 51 such variants), fragmenting venue priors. Surfaced live on Leicester v Derby (Grace Road gave two different par sets). Fixed: `src/ingestion/venues.py:canonical_venue()` merges nested-suffix variants to the most specific form, applied in prior-building, climatology, weather joins, AND `signals.py` inference. Ambiguous bare stems shared by DISTINCT grounds (notably "County Ground" → 6 different cities) are deliberately NOT merged. Grace Road now resolves to one prior; all models retrained on canonical venue keys.
 
+### Player strength — deployed for phase_6 only (2026-05-27)
+
+Addresses the roster-turnover weakness (team priors assume a fixed XI). Leak-free
+per-innings features (`scripts/build_player_strength.py` → `data/processed/innings_player_strength.parquet`):
+- `bat_str_p6/p10/p15/full`: phase-weighted mean of the batting order's prior-season
+  strike rate (top-N batters per phase; openers dominate the powerplay). Shrunk toward league mean.
+- `bowl_strength`: frontline-weighted (by prior volume) mean prior economy of the bowlers.
+
+OOS test (`scripts/oos_player_strength_check.py`, train ≤2024 / eval 2025+) across two
+feature designs consistently showed: **helps the powerplay, hurts the longer phases**:
+```
+              baseline   +player(phase-weighted)
+phase_6       +14.9%     +23.7%   ✓✓ deployed
+phase_10      +15.5%     +16.7%   ~flat
+phase_15      +42.6%     +25.5%   ✗ (overfits small-n strong model)
+full_innings  +52.0%     +41.3%   ✗
+```
+Mechanism: powerplay scoring is individual-driven (specific openers + new-ball bowlers,
+who vary as XIs change); longer phases are team/conditions-driven (already captured).
+**Deployed for phase_6 only.** `signals.py:predict_p` accepts `bat_strength`/`bowl_strength`;
+when the XI is unknown at projection (no reliable lineup feed) it median-imputes (neutral),
+so the edge only materialises when the actual XI is supplied. Caveat: per-phase
+deployment based on the same OOS set is mild data-snooping — mitigated by consistency
+across two feature designs + the physical mechanism, but the phase_6 gain is ~1.3 SE.
+
+**TODO to realise the phase_6 edge live**: plumb the XI → `bat_str_p6`/`bowl_strength`
+through `line_projector` / the bot (needs a lineup source; the strength builder's
+player-season ratings can compute it from an announced XI).
+
 **All models corrected for scoring-inflation lag (the biggest hidden flaw).** full_innings was the worst case: par for the Hampshire test moved 141 → 175 after the fix (market 187, actual 200 — old model would have lost badly backing under). The earlier "+24-44% ROI" full-sample headlines were in-sample inflated; the £5 OOS table above is the honest read.
 
 **The scoring-inflation lag was the single biggest hidden problem.** Every phase model used backward-looking equal-weight priors that systematically underestimated the modern game. The fix (recency-weighted priors + a `league_trend` feature = the league's prior-season average) is deployed everywhere. Re-apply it to any new model.
