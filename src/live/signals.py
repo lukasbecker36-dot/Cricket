@@ -93,6 +93,13 @@ class FullInningsModel:
         # Optional: player-strength medians for imputation (phase_6). When the
         # XI isn't known at projection time we fall back to these neutral values.
         self.player_strength_medians: dict = self.meta.get("player_strength_medians") or {}
+        # Optional: Platt-scaling calibrator (phase_6/10 under-predict overs).
+        # calibrated_p = sigmoid(A*logit(raw_p) + B). Fit on walk-forward OOS.
+        platt_path = model_dir / f"{prefix}_platt.json"
+        self.platt: tuple[float, float] | None = None
+        if platt_path.exists():
+            blob = json.loads(platt_path.read_text())
+            self.platt = (float(blob["A"]), float(blob["B"]))
 
     def _lookup(self, table: dict, team: str, season: int) -> float:
         from src.ingestion.teams import canonical_team
@@ -163,7 +170,13 @@ class FullInningsModel:
             row[f"is_{L}"] = 1.0 if league == L else 0.0
         # Build the row vector strictly from self.features so missing keys aren't sent.
         x = np.array([[row.get(f, 0.0) for f in self.features]], dtype=np.float32)
-        return float(self.booster.predict(x)[0])
+        p = float(self.booster.predict(x)[0])
+        if self.platt is not None:
+            A, B = self.platt
+            pc = min(max(p, 1e-6), 1 - 1e-6)
+            z = A * np.log(pc / (1 - pc)) + B
+            p = float(1.0 / (1.0 + np.exp(-z)))
+        return p
 
 
 def load_models(model_dir: Path) -> dict[str, "FullInningsModel"]:
