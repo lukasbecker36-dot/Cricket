@@ -102,6 +102,8 @@ class FullInningsModel:
                   weather: dict | None = None) -> float:
         bat_prior = self._lookup(self.bat_pp, batting_team, season)
         bowl_prior = self._lookup(self.bowl_pp, bowling_team, season)
+        from src.ingestion.venues import canonical_venue
+        venue = canonical_venue(venue)
         v_par = self._lookup(self.venue_par, venue, season)
         phase_par_from_target = (float(target) * self.target_balls / 120.0) if target is not None else 0.0
         # Trend feature: league's prior-season average phase total. Falls back to

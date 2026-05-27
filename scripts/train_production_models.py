@@ -20,6 +20,7 @@ import pandas as pd
 
 from src.ingestion.storage import read_balls
 from src.ingestion.teams import canonical_team
+from src.ingestion.venues import canonical_venue
 from src.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ def collect_phase_df(balls, tb):
         rows.append({"match_id": mid, "season": int(g["season"].iloc[0]),
                      "batting_team": canonical_team(g["batting_team"].iloc[0]),
                      "bowling_team": canonical_team(g["bowling_team"].iloc[0]),
-                     "venue": g["venue"].iloc[0], "total": t})
+                     "venue": canonical_venue(g["venue"].iloc[0]), "total": t})
     return pd.DataFrame(rows)
 
 
@@ -286,6 +287,7 @@ def main() -> int:
             match_dates[str(r["match_id"])] = str(r["date"])[:10]
     balls = pd.concat(all_balls, ignore_index=True)
     weather = pd.read_parquet("data/processed/match_weather.parquet")
+    weather["venue"] = weather["venue"].map(canonical_venue)  # align with canonical priors
 
     model_dir = Path("models")
     deploy_phase_trend("phase_6", 36, 20, 110, 5, balls, league_by_match, model_dir)
