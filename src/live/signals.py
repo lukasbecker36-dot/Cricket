@@ -90,6 +90,9 @@ class FullInningsModel:
             self.global_climo: dict = blob.get("global", {})
         else:
             self.venue_climo, self.global_climo = {}, {}
+        # Optional: player-strength medians for imputation (phase_6). When the
+        # XI isn't known at projection time we fall back to these neutral values.
+        self.player_strength_medians: dict = self.meta.get("player_strength_medians") or {}
 
     def _lookup(self, table: dict, team: str, season: int) -> float:
         from src.ingestion.teams import canonical_team
@@ -99,7 +102,9 @@ class FullInningsModel:
                   batting_team: str, bowling_team: str, venue: str,
                   season: int, innings: int, league: str | None,
                   target: float | None = None,
-                  weather: dict | None = None) -> float:
+                  weather: dict | None = None,
+                  bat_strength: float | None = None,
+                  bowl_strength: float | None = None) -> float:
         bat_prior = self._lookup(self.bat_pp, batting_team, season)
         bowl_prior = self._lookup(self.bowl_pp, bowling_team, season)
         from src.ingestion.venues import canonical_venue
@@ -148,6 +153,12 @@ class FullInningsModel:
                         base = self.global_climo.get(raw_var, float(raw))
                     row[anom_feat] = float(raw) - float(base)
         # precip stays absolute even in anomaly mode (handled in the loop above)
+        # Player-strength features (phase_6): use supplied XI strength, else
+        # median-impute (neutral lineup) when the XI isn't known at projection.
+        for feat, supplied in (("bat_strength", bat_strength), ("bowl_strength", bowl_strength)):
+            if feat in self.features:
+                val = supplied if supplied is not None else self.player_strength_medians.get(feat)
+                row[feat] = float(val) if val is not None else 0.0
         for L in self.leagues:
             row[f"is_{L}"] = 1.0 if league == L else 0.0
         # Build the row vector strictly from self.features so missing keys aren't sent.

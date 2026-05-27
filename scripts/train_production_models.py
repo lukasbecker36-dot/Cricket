@@ -81,11 +81,24 @@ ANOM_RAW = {"temp_anom": "temp_c", "humid_anom": "humidity_pct",
 ANOM_FEATURES = ["temp_anom", "humid_anom", "wind_anom", "precip_mm", "cloud_anom"]
 
 
-def deploy_phase_trend(phase_label, tb, x_min, x_max, x_step, balls, league_by_match, model_dir):
-    """Generic recency-priors + league_trend deploy for a phase (phase_6/phase_10)."""
-    logger.info("=== %s: recency priors + league_trend ===", phase_label)
+def deploy_phase_trend(phase_label, tb, x_min, x_max, x_step, balls, league_by_match, model_dir,
+                       player_strength: dict | None = None, bat_col: str | None = None):
+    """Generic recency-priors + league_trend deploy for a phase.
+
+    If `player_strength` (a {(match_id, innings): row} map) and `bat_col` are
+    given, adds phase-weighted player features (bat_strength=row[bat_col],
+    bowl_strength). Only used for phase_6, where OOS showed a consistent gain.
+    """
+    logger.info("=== %s: recency priors + league_trend%s ===", phase_label,
+                " + player" if player_strength else "")
     pp = collect_phase_df(balls, tb)
     default_par = float(pp["total"].mean())
+    use_players = player_strength is not None and bat_col is not None
+    bat_str_med = bowl_str_med = None
+    if use_players:
+        import numpy as _np
+        bat_str_med = float(_np.median([r[bat_col] for r in player_strength.values()]))
+        bowl_str_med = float(_np.median([r["bowl_strength"] for r in player_strength.values()]))
 
     bat, bowl, ven, trend = {}, {}, {}, {}
     for s in sorted(pp["season"].unique()):
@@ -109,19 +122,27 @@ def deploy_phase_trend(phase_label, tb, x_min, x_max, x_step, balls, league_by_m
         vp = ven.get(f"{r.venue}|{s}", default_par)
         lt = trend.get(str(s), default_par)
         league = league_by_match.get(str(r.match_id), "unknown")
+        row_base = {"season": s, "league": league,
+                    "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,
+                    "innings": 1, "league_trend": lt}
+        if use_players:
+            sr = player_strength.get((str(r.match_id), 1))
+            row_base["bat_strength"] = float(sr[bat_col]) if sr is not None else bat_str_med
+            row_base["bowl_strength"] = float(sr["bowl_strength"]) if sr is not None else bowl_str_med
         for X in range(x_min, x_max + 1, x_step):
-            rows.append({"season": s, "league": league, "threshold_X": X,
-                         "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,
+            rows.append({**row_base, "threshold_X": X,
                          "x_minus_par": X - vp, "x_minus_bat": X - bp, "x_minus_bowl": X - wp,
-                         "innings": 1, "league_trend": lt, "x_minus_trend": X - lt,
-                         "actual_over_X": int(r.total >= X)})
+                         "x_minus_trend": X - lt, "actual_over_X": int(r.total >= X)})
     train_df = pd.DataFrame(rows)
     for L in LEAGUES:
         train_df[f"is_{L}"] = (train_df["league"] == L).astype(int)
 
     features = ["threshold_X", "bat_prior", "bowl_prior", "venue_par",
                 "x_minus_par", "x_minus_bat", "x_minus_bowl", "innings",
-                "league_trend", "x_minus_trend"] + [f"is_{L}" for L in LEAGUES]
+                "league_trend", "x_minus_trend"]
+    if use_players:
+        features += ["bat_strength", "bowl_strength"]
+    features += [f"is_{L}" for L in LEAGUES]
     booster, n = train_booster(train_df, features)
 
     booster.save_model(str(model_dir / f"{phase_label}_gbm.lgb"))
@@ -129,7 +150,9 @@ def deploy_phase_trend(phase_label, tb, x_min, x_max, x_step, balls, league_by_m
             "edge_threshold": 0.05, "implied_min": 0.10, "implied_max": 0.90,
             "leagues": LEAGUES, "default_par": default_par, "trained_rows": int(n),
             "best_iter": int(booster.best_iteration),
-            "prior_mode": "recency_halflife2", "has_trend": True}
+            "prior_mode": "recency_halflife2", "has_trend": True,
+            "player_strength_medians": ({"bat_strength": bat_str_med, "bowl_strength": bowl_str_med}
+                                        if use_players else None)}
     (model_dir / f"{phase_label}_meta.json").write_text(json.dumps(meta, indent=2))
     (model_dir / f"{phase_label}_bat_prior.json").write_text(json.dumps(bat))
     (model_dir / f"{phase_label}_bowl_prior.json").write_text(json.dumps(bowl))
@@ -289,8 +312,13 @@ def main() -> int:
     weather = pd.read_parquet("data/processed/match_weather.parquet")
     weather["venue"] = weather["venue"].map(canonical_venue)  # align with canonical priors
 
+    # player-strength features: phase_6 only (OOS showed consistent powerplay gain)
+    strength = pd.read_parquet("data/processed/innings_player_strength.parquet")
+    strength_map = {(str(r["match_id"]), int(r["innings"])): r for _, r in strength.iterrows()}
+
     model_dir = Path("models")
-    deploy_phase_trend("phase_6", 36, 20, 110, 5, balls, league_by_match, model_dir)
+    deploy_phase_trend("phase_6", 36, 20, 110, 5, balls, league_by_match, model_dir,
+                       player_strength=strength_map, bat_col="bat_str_p6")
     deploy_phase_trend("phase_10", 60, 40, 175, 5, balls, league_by_match, model_dir)
     deploy_full_innings_trend(balls, league_by_match, model_dir)
     deploy_phase15_weather(balls, league_by_match, match_dates, weather, model_dir)
