@@ -95,38 +95,70 @@ def main() -> int:
     bat_def_by_season, bat_overall = season_defaults(bat_rating)
     bowl_def_by_season, bowl_overall = season_defaults(bowl_rating)
 
+    # prior bowling volume per (player, season) for frontline weighting
+    legal = balls[balls["is_legal_delivery"]]
+    bowl_balls = legal.groupby(["bowler", "season"]).size()
+    prior_bowl_vol: dict[str, float] = {}
+    for s in sorted(balls["season"].unique()):
+        pv = bowl_balls[bowl_balls.index.get_level_values("season") < s]
+        for player, n in pv.groupby(level="bowler").sum().items():
+            prior_bowl_vol[f"{player}|{s}"] = float(n)
+
+    # phase -> how many top-order batters mostly account for that phase
+    PHASE_TOPN = {"p6": 3, "p10": 4, "p15": 6, "full": 7}
+
     rows = []
     for (mid, innings), g in balls.groupby(["match_id", "innings"]):
         season = int(g["season"].iloc[0])
-        batters = set(g["striker"].dropna()) | set(g["non_striker"].dropna())
-        bowlers = set(g[g["is_legal_delivery"]]["bowler"].dropna())
+        g = g.sort_values(["over", "ball"]).reset_index(drop=True)
+        # batting order = order of first appearance as striker
+        order = list(dict.fromkeys(g["striker"].dropna().tolist()))
+        bowlers = list(dict.fromkeys(g[g["is_legal_delivery"]]["bowler"].dropna().tolist()))
+        if not order or not bowlers:
+            continue
         bat_def = bat_def_by_season.get(season, bat_overall)
         bowl_def = bowl_def_by_season.get(season, bowl_overall)
-        bat_vals = [bat_rating.get(f"{p}|{season}", bat_def) for p in batters]
-        bowl_vals = [bowl_rating.get(f"{p}|{season}", bowl_def) for p in bowlers]
-        if not bat_vals or not bowl_vals:
-            continue
-        rows.append({
-            "match_id": mid, "innings": int(innings),
-            "bat_strength": float(np.mean(bat_vals)),
-            "bowl_strength": float(np.mean(bowl_vals)),
-            "season": season,
-        })
+
+        def order_sr(name):
+            return bat_rating.get(f"{name}|{season}", bat_def)
+
+        row = {"match_id": mid, "innings": int(innings), "season": season}
+        # phase-weighted batting: mean prior SR of the top-N batters for the phase
+        for key, n in PHASE_TOPN.items():
+            topn = order[:n] if len(order) >= 1 else order
+            row[f"bat_str_{key}"] = float(np.mean([order_sr(p) for p in topn])) if topn else bat_def
+        # frontline-weighted bowling: prior-volume-weighted mean economy
+        econ = np.array([bowl_rating.get(f"{p}|{season}", bowl_def) for p in bowlers])
+        wts = np.array([prior_bowl_vol.get(f"{p}|{season}", 1.0) + 1.0 for p in bowlers])
+        row["bowl_strength"] = float(np.average(econ, weights=wts))
+        rows.append(row)
     df = pd.DataFrame(rows)
     out = Path("data/processed/innings_player_strength.parquet")
     df.to_parquet(out, index=False)
     logger.info("saved %s (%d innings)", out, len(df))
 
-    # sanity: do high bat_strength innings score more? correlate with actual phase-6 total
-    print("\n=== sanity check ===")
-    print(df[["bat_strength", "bowl_strength"]].describe().round(2).to_string())
-    print(f"\nbat_strength range: {df['bat_strength'].min():.0f}-{df['bat_strength'].max():.0f} (strike rate)")
-    print(f"bowl_strength range: {df['bowl_strength'].min():.1f}-{df['bowl_strength'].max():.1f} (economy)")
-    # correlate bat_strength with innings full total
-    tot = balls.groupby(["match_id", "innings"])["runs_total"].sum().reset_index().rename(columns={"runs_total": "total"})
-    m = df.merge(tot, on=["match_id", "innings"])
-    print(f"\ncorr(bat_strength, innings total): {m['bat_strength'].corr(m['total']):+.3f}")
-    print(f"corr(bowl_strength, innings total): {m['bowl_strength'].corr(m['total']):+.3f}  (expect +: weaker attacks concede more)")
+    # sanity: phase-weighted batting vs actual phase totals
+    print("\n=== sanity check (phase-weighted) ===")
+    bat_cols = ["bat_str_p6", "bat_str_p10", "bat_str_p15", "bat_str_full"]
+    print(df[bat_cols + ["bowl_strength"]].describe().round(2).loc[["mean", "min", "max"]].to_string())
+
+    def phase_total_for(tb):
+        out = {}
+        for (mid, inn), g in balls.groupby(["match_id", "innings"]):
+            g = g.sort_values(["over", "ball", "is_legal_delivery"], ascending=[True, True, False])
+            li = np.where(g["is_legal_delivery"].values)[0]
+            if len(li) < tb:
+                continue
+            out[(mid, int(inn))] = int(g.iloc[:li[tb-1]+1]["runs_total"].sum())
+        return out
+
+    print("\ncorr of phase-weighted bat strength with the matching phase total:")
+    for key, tb in [("p6", 36), ("p10", 60), ("p15", 90)]:
+        pt = phase_total_for(tb)
+        d = df.copy()
+        d["pt"] = d.apply(lambda r: pt.get((r["match_id"], int(r["innings"]))), axis=1)
+        d = d.dropna(subset=["pt"])
+        print(f"  bat_str_{key} vs {key} total: {d[f'bat_str_{key}'].corr(d['pt']):+.3f}  (n={len(d)})")
     return 0
 
 

@@ -69,9 +69,12 @@ def main() -> int:
         for _, r in m.iterrows(): league_by_match[str(r["match_id"])] = lg
     balls = pd.concat(all_balls, ignore_index=True)
     strength = pd.read_parquet("data/processed/innings_player_strength.parquet")
-    str_map = {(str(r.match_id), int(r.innings)): (r.bat_strength, r.bowl_strength)
-               for r in strength.itertuples(index=False)}
-    bat_med = float(strength["bat_strength"].median()); bowl_med = float(strength["bowl_strength"].median())
+    # phase -> which phase-weighted batting column to use
+    BATCOL = {"phase_6": "bat_str_p6", "phase_10": "bat_str_p10",
+              "phase_15": "bat_str_p15", "full_innings": "bat_str_full"}
+    str_map = {(str(r["match_id"]), int(r["innings"])): r for _, r in strength.iterrows()}
+    bowl_med = float(strength["bowl_strength"].median())
+    bat_med = {c: float(strength[c].median()) for c in BATCOL.values()}
 
     eval_all = pd.read_parquet("data/processed/eval_phase_lines.parquet")
     eval_full = pd.read_parquet("data/processed/eval_line_combined.parquet")
@@ -80,6 +83,15 @@ def main() -> int:
     print(f"\n{'phase':<14} {'baseline ROI':>14} {'+player ROI':>14}   (2025+ OOS, £5, full signal)")
     print("-" * 60)
     for plabel, ekey, tb, xmn, xmx, xst in PHASES:
+        batcol = BATCOL[plabel]
+        bm = bat_med[batcol]
+
+        def strength_for(match_id):
+            r = str_map.get((str(match_id), 1))
+            if r is None:
+                return bm, bowl_med
+            return float(r[batcol]), float(r["bowl_strength"])
+
         # phase df (inn1) with canonical names
         rows = []
         for (mid, inn), g in balls.groupby(["match_id", "innings"]):
@@ -108,7 +120,7 @@ def main() -> int:
             s = int(r.season)
             bp = bat.get(f"{r.batting_team}|{s}", default_par); wp = bowl.get(f"{r.bowling_team}|{s}", default_par)
             vp = ven.get(f"{r.venue}|{s}", default_par); lt = trend.get(str(s), default_par)
-            bs, ws = str_map.get((r.match_id, 1), (bat_med, bowl_med))
+            bs, ws = strength_for(r.match_id)
             league = league_by_match.get(r.match_id, "unknown")
             for X in range(xmn, xmx + 1, xst):
                 tr_rows.append({"season": s, "league": league, "threshold_X": X, "bat_prior": bp,
@@ -134,7 +146,7 @@ def main() -> int:
             bp = bat.get(f"{bt_}|{s}", default_par); wp = bowl.get(f"{bw_}|{s}", default_par)
             vp = ven.get(f"{vv}|{s}", default_par); lt = trend.get(str(s), default_par)
             X = int(round(rr["line_t_minus_1"]))
-            bs, ws = str_map.get((rr["match_id"], 1), (bat_med, bowl_med))
+            bs, ws = strength_for(rr["match_id"])
             d = {"threshold_X": float(X), "bat_prior": bp, "bowl_prior": wp, "venue_par": vp,
                  "x_minus_par": X - vp, "x_minus_bat": X - bp, "x_minus_bowl": X - wp, "innings": 1,
                  "league_trend": lt, "x_minus_trend": X - lt, "bat_strength": bs, "bowl_strength": ws}
