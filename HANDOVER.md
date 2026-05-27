@@ -67,6 +67,8 @@ Investigated via `scripts/investigate_hidden_flaws.py`:
 
 Aggregate effect was modest (total full-signal £968 → £991) because each flaw touched only 4-10% of rows, but the per-affected-match correction is large and concentrated in markets we trade (English full-innings, RCB).
 
+3. **Venue name fragmentation** (same class as #2, for grounds). Cricsheet logs one ground under multiple strings ("Grace Road" vs "Grace Road, Leicester"; 51 such variants), fragmenting venue priors. Surfaced live on Leicester v Derby (Grace Road gave two different par sets). Fixed: `src/ingestion/venues.py:canonical_venue()` merges nested-suffix variants to the most specific form, applied in prior-building, climatology, weather joins, AND `signals.py` inference. Ambiguous bare stems shared by DISTINCT grounds (notably "County Ground" → 6 different cities) are deliberately NOT merged. Grace Road now resolves to one prior; all models retrained on canonical venue keys.
+
 **All models corrected for scoring-inflation lag (the biggest hidden flaw).** full_innings was the worst case: par for the Hampshire test moved 141 → 175 after the fix (market 187, actual 200 — old model would have lost badly backing under). The earlier "+24-44% ROI" full-sample headlines were in-sample inflated; the £5 OOS table above is the honest read.
 
 **The scoring-inflation lag was the single biggest hidden problem.** Every phase model used backward-looking equal-weight priors that systematically underestimated the modern game. The fix (recency-weighted priors + a `league_trend` feature = the league's prior-season average) is deployed everywhere. Re-apply it to any new model.
